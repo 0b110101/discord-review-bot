@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -23,17 +24,32 @@ HEADERS = {
     "X-RapidAPI-Host": "opencritic-api.p.rapidapi.com",
 }
 
-# 新游戏时间窗口：
-# 发行日前 14 天 ～ 发行后 3 天
+# ------------------------------------------------------------
+# 新游戏监控时间范围
+# ------------------------------------------------------------
+
 PRE_RELEASE_DAYS = 14
 POST_RELEASE_DAYS = 3
 
+# ------------------------------------------------------------
+# OpenCritic /game 分页
+#
+# 每页通常包含 20 个游戏。
+# 我们检查足够多的近期页面，避免只看到少数游戏。
+# ------------------------------------------------------------
+
+MAX_PAGES = 5
+
+# API 请求之间稍微间隔一下
+REQUEST_DELAY = 0.3
+
 
 # ============================================================
-# API
+# HTTP
 # ============================================================
 
 def api_get(path, params=None):
+
     url = API_BASE + path
 
     response = requests.get(
@@ -48,14 +64,6 @@ def api_get(path, params=None):
     return response.json()
 
 
-def get_reviewed_today():
-    return api_get("/game/reviewed-today")
-
-
-def get_game(game_id):
-    return api_get(f"/game/{game_id}")
-
-
 # ============================================================
 # State
 # ============================================================
@@ -63,6 +71,7 @@ def get_game(game_id):
 def load_state():
 
     if not STATE_FILE.exists():
+
         return {
             "initialized": False,
             "games": {}
@@ -76,12 +85,24 @@ def load_state():
             encoding="utf-8"
         ) as f:
 
-            return json.load(f)
+            data = json.load(f)
 
-    except Exception:
+        data.setdefault(
+            "initialized",
+            False
+        )
+
+        data.setdefault(
+            "games",
+            {}
+        )
+
+        return data
+
+    except Exception as e:
 
         print(
-            "WARNING: State file is invalid."
+            f"WARNING: Failed to read state file: {e}"
         )
 
         return {
@@ -97,8 +118,15 @@ def save_state(state):
         exist_ok=True
     )
 
+    # 先写临时文件，再替换。
+    # 防止程序中途失败导致 JSON 损坏。
+
+    temp_file = STATE_FILE.with_suffix(
+        ".tmp"
+    )
+
     with open(
-        STATE_FILE,
+        temp_file,
         "w",
         encoding="utf-8"
     ) as f:
@@ -110,10 +138,50 @@ def save_state(state):
             indent=2
         )
 
+    temp_file.replace(
+        STATE_FILE
+    )
+
 
 # ============================================================
-# Release Date
+# Date
 # ============================================================
+
+def parse_date(value):
+
+    if not value:
+        return None
+
+    if not isinstance(value, str):
+        return None
+
+    try:
+
+        # OpenCritic 通常返回：
+        # 2026-09-10T00:00:00.000Z
+
+        return datetime.fromisoformat(
+            value.replace(
+                "Z",
+                "+00:00"
+            )
+        )
+
+    except ValueError:
+
+        try:
+
+            return datetime.strptime(
+                value[:10],
+                "%Y-%m-%d"
+            ).replace(
+                tzinfo=timezone.utc
+            )
+
+        except ValueError:
+
+            return None
+
 
 def get_release_date(game):
 
@@ -124,29 +192,22 @@ def get_release_date(game):
 
     for field in possible_fields:
 
-        value = game.get(field)
+        release_date = parse_date(
+            game.get(field)
+        )
 
-        if not value:
-            continue
+        if release_date:
 
-        if isinstance(value, str):
-
-            try:
-
-                return datetime.strptime(
-                    value[:10],
-                    "%Y-%m-%d"
-                ).date()
-
-            except ValueError:
-                pass
+            return release_date
 
     return None
 
 
-def is_in_new_game_window(game):
+def is_in_monitor_window(game):
 
-    release_date = get_release_date(game)
+    release_date = get_release_date(
+        game
+    )
 
     if release_date is None:
 
@@ -156,47 +217,169 @@ def is_in_new_game_window(game):
 
         return False
 
-    today = datetime.now(
+    now = datetime.now(
         timezone.utc
-    ).date()
+    )
 
-    start_date = (
+    start = (
         release_date
-        - timedelta(days=PRE_RELEASE_DAYS)
+        - timedelta(
+            days=PRE_RELEASE_DAYS
+        )
     )
 
-    end_date = (
+    end = (
         release_date
-        + timedelta(days=POST_RELEASE_DAYS)
+        + timedelta(
+            days=POST_RELEASE_DAYS
+        )
     )
 
-    in_window = (
-        start_date
-        <= today
-        <= end_date
-    )
-
-    print(
-        f"  Release date: {release_date}"
-    )
-
-    print(
-        f"  Monitoring window: "
-        f"{start_date} ~ {end_date}"
+    result = (
+        start
+        <= now
+        <= end
     )
 
     print(
-        f"  In window: {in_window}"
+        f"  Release: "
+        f"{release_date.isoformat()}"
     )
 
-    return in_window
+    print(
+        f"  Window: "
+        f"{start.isoformat()} "
+        f"-> "
+        f"{end.isoformat()}"
+    )
+
+    print(
+        f"  In window: {result}"
+    )
+
+    return result
+
+
+# ============================================================
+# OpenCritic
+# ============================================================
+
+def get_recent_games():
+
+    """
+    获取近期游戏。
+
+    OpenCritic 的 /game 接口是分页游戏列表。
+    我们按发行日期排序，并读取多个页面。
+
+    不依赖 reviewed-today 的 10 个结果，
+    避免同一天游戏过多时漏掉目标游戏。
+    """
+
+    all_games = {}
+
+    for page in range(
+        1,
+        MAX_PAGES + 1
+    ):
+
+        print(
+            f"Getting game list page {page}..."
+        )
+
+        try:
+
+            data = api_get(
+                "/game",
+                params={
+                    "page": page,
+                    "sort": "date",
+                }
+            )
+
+        except Exception as e:
+
+            print(
+                f"ERROR getting page {page}: {e}"
+            )
+
+            continue
+
+        # ----------------------------------------------------
+        # 兼容不同 API 返回结构
+        # ----------------------------------------------------
+
+        items = []
+
+        if isinstance(data, list):
+
+            items = data
+
+        elif isinstance(data, dict):
+
+            if isinstance(
+                data.get("items"),
+                list
+            ):
+
+                items = data["items"]
+
+            elif isinstance(
+                data.get("data"),
+                list
+            ):
+
+                items = data["data"]
+
+            elif isinstance(
+                data.get("data"),
+                dict
+            ):
+
+                if isinstance(
+                    data["data"].get("items"),
+                    list
+                ):
+
+                    items = data[
+                        "data"
+                    ]["items"]
+
+        print(
+            f"  Found {len(items)} games."
+        )
+
+        for game in items:
+
+            game_id = game.get("id")
+
+            if game_id is not None:
+
+                all_games[
+                    str(game_id)
+                ] = game
+
+        time.sleep(
+            REQUEST_DELAY
+        )
+
+    return list(
+        all_games.values()
+    )
+
+
+def get_game(game_id):
+
+    return api_get(
+        f"/game/{game_id}"
+    )
 
 
 # ============================================================
 # Discord
 # ============================================================
 
-def send_discord(game):
+def send_discord(game, old_score=None):
 
     name = game.get(
         "name",
@@ -208,33 +391,62 @@ def send_discord(game):
     )
 
     reviews = game.get(
-        "numTopCriticReviews",
-        0
+        "numTopCriticReviews"
     )
+
+    if reviews is None:
+
+        reviews = game.get(
+            "numReviews",
+            0
+        )
 
     recommended = game.get(
         "percentRecommended"
     )
 
-    game_id = game.get("id")
+    game_id = game.get(
+        "id"
+    )
 
-    opencritic_url = (
+    url = (
         f"https://opencritic.com/game/{game_id}"
     )
 
+    # --------------------------------------------------------
+    # Score display
+    # --------------------------------------------------------
+
+    if old_score is None:
+
+        score_text = (
+            f"🟢 **OpenCritic Score: "
+            f"{score:g}**"
+        )
+
+    else:
+
+        score_text = (
+            f"📈 **OpenCritic Score: "
+            f"{old_score:g} → {score:g}**"
+        )
+
     description = (
-        f"🟢 **OpenCritic Score: {score}**\n\n"
-        f"⭐ Top Critic Reviews: {reviews}\n"
+        f"{score_text}\n\n"
+        f"⭐ Top Critic Reviews: "
+        f"{reviews}\n"
     )
 
     if recommended is not None:
 
         description += (
-            f"👍 Recommended: {recommended}%\n"
+            f"👍 Recommended: "
+            f"{recommended:.1f}%\n"
         )
 
     description += (
-        f"\n[View on OpenCritic]({opencritic_url})"
+        f"\n[View on OpenCritic]"
+        f"({url})"
     )
 
     payload = {
@@ -244,13 +456,12 @@ def send_discord(game):
         "embeds": [
             {
                 "title": (
-                    f"🎮 {name} — "
-                    f"OpenCritic Score"
+                    f"🎮 {name}"
                 ),
 
                 "description": description,
 
-                "url": opencritic_url,
+                "url": url,
             }
         ]
     }
@@ -263,6 +474,10 @@ def send_discord(game):
 
     response.raise_for_status()
 
+    print(
+        "  Discord notification sent."
+    )
+
 
 # ============================================================
 # Main
@@ -271,14 +486,14 @@ def send_discord(game):
 def main():
 
     # --------------------------------------------------------
-    # Check configuration
+    # Configuration check
     # --------------------------------------------------------
 
     if not API_KEY:
 
         print(
             "ERROR: OPENCRITIC_API_KEY "
-            "is not configured."
+            "is missing."
         )
 
         sys.exit(1)
@@ -287,7 +502,7 @@ def main():
 
         print(
             "ERROR: DISCORD_WEBHOOK "
-            "is not configured."
+            "is missing."
         )
 
         sys.exit(1)
@@ -309,31 +524,30 @@ def main():
     )
 
     print(
+        "=================================================="
+    )
+
+    print(
+        "OpenCritic Score Monitor"
+    )
+
+    print(
+        "=================================================="
+    )
+
+    print(
         f"Initialized: {initialized}"
     )
 
     # --------------------------------------------------------
-    # Get today's reviewed games
+    # Get recent games
     # --------------------------------------------------------
 
-    print(
-        "\nGetting games reviewed today..."
-    )
-
-    games = get_reviewed_today()
-
-    if not isinstance(games, list):
-
-        print(
-            "ERROR: Unexpected API response:"
-        )
-
-        print(games)
-
-        sys.exit(1)
+    games = get_recent_games()
 
     print(
-        f"Found {len(games)} games."
+        f"\nTotal unique games found: "
+        f"{len(games)}"
     )
 
     state_changed = False
@@ -342,22 +556,50 @@ def main():
     # Process games
     # --------------------------------------------------------
 
-    for item in games:
+    for summary in games:
 
-        game_id = item.get("id")
+        game_id = summary.get(
+            "id"
+        )
 
-        if not game_id:
+        if game_id is None:
             continue
 
-        game_id = str(game_id)
+        game_id = str(
+            game_id
+        )
+
+        # ----------------------------------------------------
+        # 先利用列表数据过滤日期
+        # ----------------------------------------------------
+
+        if not is_in_monitor_window(
+            summary
+        ):
+
+            continue
 
         try:
 
-            game = get_game(game_id)
+            print(
+                "\n------------------------------------------"
+            )
+
+            print(
+                f"Checking ID: {game_id}"
+            )
+
+            # ------------------------------------------------
+            # 获取完整游戏数据
+            # ------------------------------------------------
+
+            game = get_game(
+                game_id
+            )
 
             name = game.get(
                 "name",
-                item.get(
+                summary.get(
                     "name",
                     "Unknown Game"
                 )
@@ -368,15 +610,11 @@ def main():
             )
 
             print(
-                f"\n{name}"
+                f"Name: {name}"
             )
 
             print(
-                f"  ID: {game_id}"
-            )
-
-            print(
-                f"  Score: {score}"
+                f"Score: {score}"
             )
 
             # ------------------------------------------------
@@ -386,20 +624,27 @@ def main():
             if score is None:
 
                 print(
-                    "  No score. Skip."
+                    "No Top Critic Score."
                 )
 
-                continue
+                # 如果还不知道这个游戏，
+                # 记录它目前没有分数。
 
-            # ------------------------------------------------
-            # 新游戏时间窗口
-            # ------------------------------------------------
+                if game_id not in games_state:
 
-            if not is_in_new_game_window(game):
+                    games_state[
+                        game_id
+                    ] = {
 
-                print(
-                    "  Outside new-game window."
-                )
+                        "name": name,
+
+                        "score": None,
+
+                        "last_notified_at": None,
+
+                    }
+
+                    state_changed = True
 
                 continue
 
@@ -410,18 +655,24 @@ def main():
             if not initialized:
 
                 print(
-                    "  FIRST RUN:"
+                    "FIRST RUN:"
                 )
 
                 print(
-                    "  Recording baseline "
-                    "without Discord notification."
+                    "Recording current score "
+                    "without notification."
                 )
 
-                games_state[game_id] = {
+                games_state[
+                    game_id
+                ] = {
+
                     "name": name,
+
                     "score": score,
+
                     "last_notified_at": None,
+
                 }
 
                 state_changed = True
@@ -432,28 +683,41 @@ def main():
             # 后续运行
             # ------------------------------------------------
 
-            game_state = games_state.get(
+            previous = games_state.get(
                 game_id
             )
 
             # ------------------------------------------------
-            # 第一次看到这个游戏
+            # 从未见过这个游戏
             # ------------------------------------------------
 
-            if game_state is None:
+            if previous is None:
 
                 print(
-                    "  NEW GAME DETECTED."
+                    "NEW GAME WITH SCORE."
                 )
 
-                send_discord(game)
+                print(
+                    "Sending Discord notification."
+                )
 
-                games_state[game_id] = {
+                send_discord(
+                    game
+                )
+
+                games_state[
+                    game_id
+                ] = {
+
                     "name": name,
+
                     "score": score,
-                    "last_notified_at": datetime.now(
-                        timezone.utc
-                    ).isoformat(),
+
+                    "last_notified_at":
+                        datetime.now(
+                            timezone.utc
+                        ).isoformat(),
+
                 }
 
                 state_changed = True
@@ -461,32 +725,70 @@ def main():
                 continue
 
             # ------------------------------------------------
-            # 已经推送过
+            # 以前没有分数，现在有分数
             # ------------------------------------------------
 
-            last_notified = game_state.get(
-                "last_notified_at"
+            old_score = previous.get(
+                "score"
             )
 
+            if old_score is None:
+
+                print(
+                    f"SCORE UNLOCKED: "
+                    f"None -> {score}"
+                )
+
+                send_discord(
+                    game
+                )
+
+                previous[
+                    "score"
+                ] = score
+
+                previous[
+                    "last_notified_at"
+                ] = datetime.now(
+                    timezone.utc
+                ).isoformat()
+
+                state_changed = True
+
+                continue
+
             # ------------------------------------------------
-            # 同一个游戏允许重复推送
+            # 分数没有变化
+            # ------------------------------------------------
+
+            if float(old_score) == float(score):
+
+                print(
+                    f"Score unchanged: "
+                    f"{old_score}"
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # 分数发生变化
             # ------------------------------------------------
 
             print(
-                "  Game already notified."
+                f"SCORE CHANGED: "
+                f"{old_score} -> {score}"
             )
 
-            print(
-                "  Sending again because "
-                "game is still inside "
-                "the release window."
+            send_discord(
+                game,
+                old_score=old_score
             )
 
-            send_discord(game)
+            previous[
+                "score"
+            ] = score
 
-            game_state["score"] = score
-
-            game_state[
+            previous[
                 "last_notified_at"
             ] = datetime.now(
                 timezone.utc
@@ -494,43 +796,65 @@ def main():
 
             state_changed = True
 
+            time.sleep(
+                REQUEST_DELAY
+            )
+
         except requests.HTTPError as e:
 
             print(
-                f"  HTTP ERROR: {e}"
+                f"HTTP ERROR for "
+                f"{game_id}: {e}"
             )
 
         except Exception as e:
 
             print(
-                f"  ERROR: {e}"
+                f"ERROR for "
+                f"{game_id}: {e}"
             )
 
     # --------------------------------------------------------
-    # Mark initialized
+    # First-run baseline
     # --------------------------------------------------------
 
     if not initialized:
 
-        state["initialized"] = True
+        state[
+            "initialized"
+        ] = True
 
         state_changed = True
 
         print(
-            "\nInitial baseline created."
+            "\n=================================================="
         )
 
         print(
-            "No Discord notifications were sent."
+            "FIRST RUN COMPLETE"
+        )
+
+        print(
+            "Baseline created."
+        )
+
+        print(
+            "NO Discord notifications were sent."
+        )
+
+        print(
+            "=================================================="
         )
 
     # --------------------------------------------------------
-    # Save
+    # Save state
     # --------------------------------------------------------
 
     if state_changed:
 
-        save_state(state)
+        save_state(
+            state
+        )
 
         print(
             "\nState saved."
@@ -542,6 +866,11 @@ def main():
             "\nNo state changes."
         )
 
+    print(
+        "\nDone."
+    )
+
 
 if __name__ == "__main__":
+
     main()
