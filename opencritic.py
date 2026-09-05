@@ -1,7 +1,9 @@
 import json
 import os
+import re
 import sys
 import time
+import unicodedata
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -31,6 +33,118 @@ REQUEST_DELAY = 0.3
 
 
 # ============================================================
+# Score normalization
+# ============================================================
+
+def normalize_score(score):
+    """
+    Convert OpenCritic's raw floating-point score
+    into the integer score displayed by the website.
+
+    Example:
+        85.67796610169492 -> 86
+        84.98148148148148 -> 85
+        81.89285714285714 -> 82
+    """
+
+    if score is None:
+        return None
+
+    try:
+        return int(round(float(score)))
+    except (TypeError, ValueError):
+        return None
+
+
+# ============================================================
+# Slug generation
+# ============================================================
+
+def make_slug(name):
+    """
+    Convert a game name into an OpenCritic-style slug.
+
+    Example:
+        The Blood of Dawnwalker
+        ->
+        the-blood-of-dawnwalker
+
+        Onimusha: Way of the Sword
+        ->
+        onimusha-way-of-the-sword
+    """
+
+    if not name:
+        return ""
+
+    # Normalize unicode characters
+    name = unicodedata.normalize(
+        "NFKD",
+        str(name)
+    )
+
+    # Remove accents
+    name = "".join(
+        char
+        for char in name
+        if not unicodedata.combining(char)
+    )
+
+    # Lowercase
+    name = name.lower()
+
+    # Replace apostrophes with nothing
+    name = name.replace("'", "")
+    name = name.replace("’", "")
+
+    # Replace everything except letters/numbers with "-"
+    name = re.sub(
+        r"[^a-z0-9]+",
+        "-",
+        name
+    )
+
+    # Remove duplicate "-"
+    name = re.sub(
+        r"-+",
+        "-",
+        name
+    )
+
+    # Remove leading/trailing "-"
+    name = name.strip("-")
+
+    return name
+
+
+def get_opencritic_url(game):
+    """
+    Build the full OpenCritic game URL.
+    """
+
+    game_id = game.get("id")
+
+    name = game.get(
+        "name",
+        "game"
+    )
+
+    slug = make_slug(name)
+
+    if slug:
+        return (
+            f"https://opencritic.com/game/"
+            f"{game_id}/"
+            f"{slug}"
+        )
+
+    return (
+        f"https://opencritic.com/game/"
+        f"{game_id}"
+    )
+
+
+# ============================================================
 # API request
 # ============================================================
 
@@ -46,15 +160,26 @@ def api_get(path):
         timeout=30,
     )
 
-    print(f"HTTP {response.status_code}")
+    print(
+        f"HTTP {response.status_code}"
+    )
 
     response.raise_for_status()
 
     try:
+
         return response.json()
+
     except ValueError:
-        print("ERROR: API did not return JSON.")
-        print(response.text[:1000])
+
+        print(
+            "ERROR: API did not return JSON."
+        )
+
+        print(
+            response.text[:1000]
+        )
+
         sys.exit(1)
 
 
@@ -130,6 +255,56 @@ def load_state():
             {}
         )
 
+        # ----------------------------------------------------
+        # Migrate old floating-point scores
+        # ----------------------------------------------------
+
+        migrated = False
+
+        for game_id, game_data in state["games"].items():
+
+            if not isinstance(
+                game_data,
+                dict
+            ):
+                continue
+
+            old_score = game_data.get(
+                "score"
+            )
+
+            if old_score is None:
+                continue
+
+            new_score = normalize_score(
+                old_score
+            )
+
+            if new_score is not None:
+
+                if old_score != new_score:
+
+                    print(
+                        f"Migrating score "
+                        f"for game {game_id}: "
+                        f"{old_score} -> {new_score}"
+                    )
+
+                    game_data[
+                        "score"
+                    ] = new_score
+
+                    migrated = True
+
+        if migrated:
+
+            save_state(state)
+
+            print(
+                "Old floating-point scores "
+                "migrated to integer scores."
+            )
+
         return state
 
     except Exception as e:
@@ -179,7 +354,10 @@ def parse_datetime(value):
     if not value:
         return None
 
-    if not isinstance(value, str):
+    if not isinstance(
+        value,
+        str
+    ):
         return None
 
     try:
@@ -214,7 +392,9 @@ def get_release_date(game):
         "releaseDate",
     ):
 
-        value = game.get(field)
+        value = game.get(
+            field
+        )
 
         parsed = parse_datetime(
             value
@@ -265,7 +445,8 @@ def is_in_monitor_window(game):
     )
 
     print(
-        f"  Release: {release_date.isoformat()}"
+        f"  Release: "
+        f"{release_date.isoformat()}"
     )
 
     print(
@@ -373,8 +554,12 @@ def send_discord(
         "Unknown Game"
     )
 
-    score = game.get(
+    raw_score = game.get(
         "topCriticScore"
+    )
+
+    score = normalize_score(
+        raw_score
     )
 
     game_id = game.get(
@@ -392,23 +577,22 @@ def send_discord(
         "percentRecommended"
     )
 
-    opencritic_url = (
-        f"https://opencritic.com/game/"
-        f"{game_id}"
+    opencritic_url = get_opencritic_url(
+        game
     )
 
     if old_score is None:
 
         score_line = (
             f"🟢 **OpenCritic Score: "
-            f"{score:g}**"
+            f"{score}**"
         )
 
     else:
 
         score_line = (
             f"📈 **OpenCritic Score: "
-            f"{old_score:g} → {score:g}**"
+            f"{old_score} → {score}**"
         )
 
     description = (
@@ -439,6 +623,11 @@ def send_discord(
             }
         ]
     }
+
+    print(
+        f"  OpenCritic URL: "
+        f"{opencritic_url}"
+    )
 
     response = requests.post(
         DISCORD_WEBHOOK,
@@ -604,8 +793,12 @@ def main():
             )
         )
 
-        score = game.get(
+        raw_score = game.get(
             "topCriticScore"
+        )
+
+        score = normalize_score(
+            raw_score
         )
 
         print(
@@ -613,7 +806,13 @@ def main():
         )
 
         print(
-            f"Top Critic Score: {score}"
+            f"Raw Top Critic Score: "
+            f"{raw_score}"
+        )
+
+        print(
+            f"Normalized Score: "
+            f"{score}"
         )
 
         # ----------------------------------------------------
@@ -625,9 +824,6 @@ def main():
             print(
                 "No score yet."
             )
-
-            # Save the game as score=None
-            # so that a later score unlock can be detected.
 
             if game_id not in games_state:
 
@@ -654,7 +850,8 @@ def main():
             )
 
             print(
-                "Saving current score as baseline."
+                "Saving current integer score "
+                "as baseline."
             )
 
             print(
@@ -714,9 +911,20 @@ def main():
         # Score was previously unavailable
         # ----------------------------------------------------
 
-        old_score = previous.get(
-            "score"
+        old_score = normalize_score(
+            previous.get(
+                "score"
+            )
         )
+
+        # Keep state normalized
+        if previous.get("score") != old_score:
+
+            previous[
+                "score"
+            ] = old_score
+
+            state_changed = True
 
         if old_score is None:
 
@@ -751,7 +959,7 @@ def main():
         # Score unchanged
         # ----------------------------------------------------
 
-        if float(old_score) == float(score):
+        if old_score == score:
 
             print(
                 f"Score unchanged: "
