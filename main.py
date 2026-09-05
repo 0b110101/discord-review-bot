@@ -4,8 +4,14 @@ import feedparser
 
 # 1. 配置 RSS 源
 RSS_FEEDS = [
-    "https://opencritic.com/rss",                           # OpenCritic 解禁
-    "https://feeds.feedburner.com/ign/all-reviews"         # IGN 评测
+    # 1. OpenCritic 官方 API 原生 XML 源（不会被防爬虫误杀）
+    "https://api.opencritic.com/api/feed/rss",
+    
+    # 2. Metacritic 官方游戏评测 Feed（备用 OpenCritic，稳定解禁）
+    "https://www.metacritic.com/rss/game",
+    
+    # 3. GameSpot 官方评测 Feed（IGN 被截胡时的完美大媒体替代）
+    "https://www.gamespot.com/feeds/reviews/"
 ]
 
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
@@ -26,8 +32,10 @@ new_sent_ids = set(sent_ids)
 
 # 伪装成完整的 Chrome 浏览器，防止被防爬虫机制拦下返回 HTML
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'application/rss+xml, application/xml, text/xml, */*'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'application/rss+xml, application/xml, text/xml, text/html, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Cache-Control': 'no-cache'
 }
 
 for feed_url in RSS_FEEDS:
