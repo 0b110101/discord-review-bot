@@ -24,22 +24,38 @@ else:
 
 new_sent_ids = set(sent_ids)
 
-headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+# 伪装成完整的 Chrome 浏览器，防止被防爬虫机制拦下返回 HTML
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/rss+xml, application/xml, text/xml, */*'
+}
 
 for feed_url in RSS_FEEDS:
     print(f"\n正在抓取源: {feed_url}")
     try:
-        # 使用 feedparser 直接解析 URL，自动容错不规范的 XML
-        feed = feedparser.parse(feed_url, request_headers=headers)
+        # 先用 requests 下载源码，解决 HTTP 拦截问题
+        response = requests.get(feed_url, headers=HEADERS, timeout=15)
         
-        if feed.bozo and not feed.entries:
-            print(f"⚠️ RSS 解析警报: {feed.bozo_exception}")
+        if response.status_code != 200:
+            print(f"❌ 请求失败，HTTP 状态码: {response.status_code}")
             continue
 
-        print(f"成功解析到 {len(feed.entries)} 条内容。")
+        # 将下载的文本喂给 feedparser
+        feed = feedparser.parse(response.content)
+
+        # 如果有 bozo 标记但解析出了内容，只打印警告，不中断流程
+        if feed.bozo:
+            print(f"⚠️ RSS 语法存在瑕疵 (已忽略): {feed.bozo_exception}")
+
+        entries = feed.entries
+        print(f"成功解析到 {len(entries)} 条内容。")
+
+        if not entries:
+            print("⚠️ 未能提取到任何条目，跳过此源。")
+            continue
 
         # 从旧到新遍历条目
-        for entry in reversed(feed.entries):
+        for entry in reversed(entries):
             title = getattr(entry, 'title', None)
             link = getattr(entry, 'link', None)
             guid = getattr(entry, 'id', link)
