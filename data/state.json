@@ -1,4 +1,25 @@
 {
   "initialized": true,
-  "games": {}
+  "games": {
+    "19374": {
+      "name": "Halloween",
+      "score": 61,
+      "last_notified_at": "2026-09-05T09:44:02.173898+00:00"
+    },
+    "20764": {
+      "name": "Onimusha: Way of the Sword",
+      "score": 85.67796610169492,
+      "last_notified_at": "2026-09-05T09:44:02.811510+00:00"
+    },
+    "21141": {
+      "name": "Orbitals",
+      "score": 81.89285714285714,
+      "last_notified_at": "2026-09-05T09:44:03.446643+00:00"
+    },
+    "20499": {
+      "name": "The Blood of Dawnwalker",
+      "score": 84.98148148148148,
+      "last_notified_at": "2026-09-05T09:44:04.352257+00:00"
+    }
+  }
 }
