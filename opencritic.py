@@ -19,49 +19,82 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 
 STATE_FILE = Path("data/state.json")
 
+PRE_RELEASE_DAYS = 14
+POST_RELEASE_DAYS = 3
+
 HEADERS = {
     "X-RapidAPI-Key": API_KEY,
     "X-RapidAPI-Host": "opencritic-api.p.rapidapi.com",
 }
 
-# ------------------------------------------------------------
-# 新游戏监控时间范围
-# ------------------------------------------------------------
-
-PRE_RELEASE_DAYS = 14
-POST_RELEASE_DAYS = 3
-
-# ------------------------------------------------------------
-# OpenCritic /game 分页
-#
-# 每页通常包含 20 个游戏。
-# 我们检查足够多的近期页面，避免只看到少数游戏。
-# ------------------------------------------------------------
-
-MAX_PAGES = 5
-
-# API 请求之间稍微间隔一下
 REQUEST_DELAY = 0.3
 
 
 # ============================================================
-# HTTP
+# API request
 # ============================================================
 
-def api_get(path, params=None):
+def api_get(path):
 
     url = API_BASE + path
+
+    print(f"GET {url}")
 
     response = requests.get(
         url,
         headers=HEADERS,
-        params=params,
         timeout=30,
     )
 
+    print(f"HTTP {response.status_code}")
+
     response.raise_for_status()
 
-    return response.json()
+    try:
+        return response.json()
+    except ValueError:
+        print("ERROR: API did not return JSON.")
+        print(response.text[:1000])
+        sys.exit(1)
+
+
+# ============================================================
+# Normalize API result
+# ============================================================
+
+def normalize_games(data):
+
+    if isinstance(data, list):
+        return data
+
+    if isinstance(data, dict):
+
+        for key in (
+            "data",
+            "games",
+            "results",
+            "items",
+        ):
+
+            value = data.get(key)
+
+            if isinstance(value, list):
+                return value
+
+    print(
+        "ERROR: Could not find a game list "
+        "in API response."
+    )
+
+    print(
+        json.dumps(
+            data,
+            ensure_ascii=False,
+            indent=2
+        )[:3000]
+    )
+
+    sys.exit(1)
 
 
 # ============================================================
@@ -85,30 +118,27 @@ def load_state():
             encoding="utf-8"
         ) as f:
 
-            data = json.load(f)
+            state = json.load(f)
 
-        data.setdefault(
+        state.setdefault(
             "initialized",
             False
         )
 
-        data.setdefault(
+        state.setdefault(
             "games",
             {}
         )
 
-        return data
+        return state
 
     except Exception as e:
 
         print(
-            f"WARNING: Failed to read state file: {e}"
+            f"ERROR reading state.json: {e}"
         )
 
-        return {
-            "initialized": False,
-            "games": {}
-        }
+        sys.exit(1)
 
 
 def save_state(state):
@@ -117,9 +147,6 @@ def save_state(state):
         parents=True,
         exist_ok=True
     )
-
-    # 先写临时文件，再替换。
-    # 防止程序中途失败导致 JSON 损坏。
 
     temp_file = STATE_FILE.with_suffix(
         ".tmp"
@@ -144,10 +171,10 @@ def save_state(state):
 
 
 # ============================================================
-# Date
+# Date handling
 # ============================================================
 
-def parse_date(value):
+def parse_datetime(value):
 
     if not value:
         return None
@@ -156,9 +183,6 @@ def parse_date(value):
         return None
 
     try:
-
-        # OpenCritic 通常返回：
-        # 2026-09-10T00:00:00.000Z
 
         return datetime.fromisoformat(
             value.replace(
@@ -185,20 +209,19 @@ def parse_date(value):
 
 def get_release_date(game):
 
-    possible_fields = [
+    for field in (
         "firstReleaseDate",
         "releaseDate",
-    ]
+    ):
 
-    for field in possible_fields:
+        value = game.get(field)
 
-        release_date = parse_date(
-            game.get(field)
+        parsed = parse_datetime(
+            value
         )
 
-        if release_date:
-
-            return release_date
+        if parsed:
+            return parsed
 
     return None
 
@@ -212,7 +235,7 @@ def is_in_monitor_window(game):
     if release_date is None:
 
         print(
-            "  Release date unavailable."
+            "  No release date."
         )
 
         return False
@@ -242,12 +265,11 @@ def is_in_monitor_window(game):
     )
 
     print(
-        f"  Release: "
-        f"{release_date.isoformat()}"
+        f"  Release: {release_date.isoformat()}"
     )
 
     print(
-        f"  Window: "
+        f"  Monitor: "
         f"{start.isoformat()} "
         f"-> "
         f"{end.isoformat()}"
@@ -261,112 +283,74 @@ def is_in_monitor_window(game):
 
 
 # ============================================================
-# OpenCritic
+# OpenCritic discovery
 # ============================================================
 
-def get_recent_games():
+def get_candidate_games():
 
-    """
-    获取近期游戏。
+    candidates = {}
 
-    OpenCritic 的 /game 接口是分页游戏列表。
-    我们按发行日期排序，并读取多个页面。
+    endpoints = [
+        "/game/upcoming",
+        "/game/recently-released",
+    ]
 
-    不依赖 reviewed-today 的 10 个结果，
-    避免同一天游戏过多时漏掉目标游戏。
-    """
-
-    all_games = {}
-
-    for page in range(
-        1,
-        MAX_PAGES + 1
-    ):
+    for endpoint in endpoints:
 
         print(
-            f"Getting game list page {page}..."
+            "\n=========================================="
         )
-
-        try:
-
-            data = api_get(
-                "/game",
-                params={
-                    "page": page,
-                    "sort": "date",
-                }
-            )
-
-        except Exception as e:
-
-            print(
-                f"ERROR getting page {page}: {e}"
-            )
-
-            continue
-
-        # ----------------------------------------------------
-        # 兼容不同 API 返回结构
-        # ----------------------------------------------------
-
-        items = []
-
-        if isinstance(data, list):
-
-            items = data
-
-        elif isinstance(data, dict):
-
-            if isinstance(
-                data.get("items"),
-                list
-            ):
-
-                items = data["items"]
-
-            elif isinstance(
-                data.get("data"),
-                list
-            ):
-
-                items = data["data"]
-
-            elif isinstance(
-                data.get("data"),
-                dict
-            ):
-
-                if isinstance(
-                    data["data"].get("items"),
-                    list
-                ):
-
-                    items = data[
-                        "data"
-                    ]["items"]
 
         print(
-            f"  Found {len(items)} games."
+            f"Discovering games: {endpoint}"
         )
 
-        for game in items:
+        data = api_get(
+            endpoint
+        )
 
-            game_id = game.get("id")
+        games = normalize_games(
+            data
+        )
 
-            if game_id is not None:
+        print(
+            f"Returned games: {len(games)}"
+        )
 
-                all_games[
-                    str(game_id)
-                ] = game
+        for game in games:
+
+            game_id = game.get(
+                "id"
+            )
+
+            if game_id is None:
+                continue
+
+            candidates[
+                str(game_id)
+            ] = game
 
         time.sleep(
             REQUEST_DELAY
         )
 
-    return list(
-        all_games.values()
+    print(
+        "\n=========================================="
     )
 
+    print(
+        f"Unique candidate games: "
+        f"{len(candidates)}"
+    )
+
+    return list(
+        candidates.values()
+    )
+
+
+# ============================================================
+# Game details
+# ============================================================
 
 def get_game(game_id):
 
@@ -379,7 +363,10 @@ def get_game(game_id):
 # Discord
 # ============================================================
 
-def send_discord(game, old_score=None):
+def send_discord(
+    game,
+    old_score=None
+):
 
     name = game.get(
         "name",
@@ -390,49 +377,42 @@ def send_discord(game, old_score=None):
         "topCriticScore"
     )
 
+    game_id = game.get(
+        "id"
+    )
+
     reviews = game.get(
         "numTopCriticReviews"
     )
 
     if reviews is None:
-
-        reviews = game.get(
-            "numReviews",
-            0
-        )
+        reviews = 0
 
     recommended = game.get(
         "percentRecommended"
     )
 
-    game_id = game.get(
-        "id"
+    opencritic_url = (
+        f"https://opencritic.com/game/"
+        f"{game_id}"
     )
-
-    url = (
-        f"https://opencritic.com/game/{game_id}"
-    )
-
-    # --------------------------------------------------------
-    # Score display
-    # --------------------------------------------------------
 
     if old_score is None:
 
-        score_text = (
+        score_line = (
             f"🟢 **OpenCritic Score: "
             f"{score:g}**"
         )
 
     else:
 
-        score_text = (
+        score_line = (
             f"📈 **OpenCritic Score: "
             f"{old_score:g} → {score:g}**"
         )
 
     description = (
-        f"{score_text}\n\n"
+        f"{score_line}\n\n"
         f"⭐ Top Critic Reviews: "
         f"{reviews}\n"
     )
@@ -446,22 +426,16 @@ def send_discord(game, old_score=None):
 
     description += (
         f"\n[View on OpenCritic]"
-        f"({url})"
+        f"({opencritic_url})"
     )
 
     payload = {
-
         "username": "OpenCritic",
-
         "embeds": [
             {
-                "title": (
-                    f"🎮 {name}"
-                ),
-
+                "title": f"🎮 {name}",
                 "description": description,
-
-                "url": url,
+                "url": opencritic_url,
             }
         ]
     }
@@ -472,7 +446,17 @@ def send_discord(game, old_score=None):
         timeout=30,
     )
 
-    response.raise_for_status()
+    if response.status_code >= 400:
+
+        print(
+            "ERROR sending Discord message:"
+        )
+
+        print(
+            response.text
+        )
+
+        response.raise_for_status()
 
     print(
         "  Discord notification sent."
@@ -486,7 +470,7 @@ def send_discord(game, old_score=None):
 def main():
 
     # --------------------------------------------------------
-    # Configuration check
+    # Check secrets
     # --------------------------------------------------------
 
     if not API_KEY:
@@ -513,15 +497,13 @@ def main():
 
     state = load_state()
 
-    initialized = state.get(
-        "initialized",
-        False
-    )
+    initialized = state[
+        "initialized"
+    ]
 
-    games_state = state.setdefault(
-        "games",
-        {}
-    )
+    games_state = state[
+        "games"
+    ]
 
     print(
         "=================================================="
@@ -540,23 +522,18 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Get recent games
+    # Discover candidates
     # --------------------------------------------------------
 
-    games = get_recent_games()
-
-    print(
-        f"\nTotal unique games found: "
-        f"{len(games)}"
-    )
+    candidates = get_candidate_games()
 
     state_changed = False
 
     # --------------------------------------------------------
-    # Process games
+    # Process
     # --------------------------------------------------------
 
-    for summary in games:
+    for summary in candidates:
 
         game_id = summary.get(
             "id"
@@ -570,219 +547,191 @@ def main():
         )
 
         # ----------------------------------------------------
-        # 先利用列表数据过滤日期
+        # First filter using summary data
         # ----------------------------------------------------
+
+        print(
+            "\n------------------------------------------"
+        )
+
+        print(
+            f"Game ID: {game_id}"
+        )
+
+        print(
+            f"Name: "
+            f"{summary.get('name', 'Unknown')}"
+        )
 
         if not is_in_monitor_window(
             summary
         ):
 
+            print(
+                "Outside monitoring window."
+            )
+
             continue
+
+        # ----------------------------------------------------
+        # Get full game data
+        # ----------------------------------------------------
 
         try:
 
-            print(
-                "\n------------------------------------------"
+            time.sleep(
+                REQUEST_DELAY
             )
-
-            print(
-                f"Checking ID: {game_id}"
-            )
-
-            # ------------------------------------------------
-            # 获取完整游戏数据
-            # ------------------------------------------------
 
             game = get_game(
                 game_id
             )
 
-            name = game.get(
+        except Exception as e:
+
+            print(
+                f"ERROR getting game "
+                f"{game_id}: {e}"
+            )
+
+            continue
+
+        name = game.get(
+            "name",
+            summary.get(
                 "name",
-                summary.get(
-                    "name",
-                    "Unknown Game"
-                )
+                "Unknown Game"
             )
+        )
 
-            score = game.get(
-                "topCriticScore"
-            )
+        score = game.get(
+            "topCriticScore"
+        )
+
+        print(
+            f"Full game: {name}"
+        )
+
+        print(
+            f"Top Critic Score: {score}"
+        )
+
+        # ----------------------------------------------------
+        # No score yet
+        # ----------------------------------------------------
+
+        if score is None:
 
             print(
-                f"Name: {name}"
+                "No score yet."
             )
 
-            print(
-                f"Score: {score}"
-            )
+            # Save the game as score=None
+            # so that a later score unlock can be detected.
 
-            # ------------------------------------------------
-            # 没有评分
-            # ------------------------------------------------
-
-            if score is None:
-
-                print(
-                    "No Top Critic Score."
-                )
-
-                # 如果还不知道这个游戏，
-                # 记录它目前没有分数。
-
-                if game_id not in games_state:
-
-                    games_state[
-                        game_id
-                    ] = {
-
-                        "name": name,
-
-                        "score": None,
-
-                        "last_notified_at": None,
-
-                    }
-
-                    state_changed = True
-
-                continue
-
-            # ------------------------------------------------
-            # 第一次运行
-            # ------------------------------------------------
-
-            if not initialized:
-
-                print(
-                    "FIRST RUN:"
-                )
-
-                print(
-                    "Recording current score "
-                    "without notification."
-                )
+            if game_id not in games_state:
 
                 games_state[
                     game_id
                 ] = {
-
                     "name": name,
-
-                    "score": score,
-
-                    "last_notified_at": None,
-
+                    "score": None,
+                    "last_notified_at": None
                 }
 
                 state_changed = True
 
-                continue
+            continue
 
-            # ------------------------------------------------
-            # 后续运行
-            # ------------------------------------------------
+        # ----------------------------------------------------
+        # FIRST RUN
+        # ----------------------------------------------------
 
-            previous = games_state.get(
+        if not initialized:
+
+            print(
+                "FIRST RUN:"
+            )
+
+            print(
+                "Saving current score as baseline."
+            )
+
+            print(
+                "No Discord notification."
+            )
+
+            games_state[
                 game_id
-            )
+            ] = {
+                "name": name,
+                "score": score,
+                "last_notified_at": None
+            }
 
-            # ------------------------------------------------
-            # 从未见过这个游戏
-            # ------------------------------------------------
+            state_changed = True
 
-            if previous is None:
+            continue
 
-                print(
-                    "NEW GAME WITH SCORE."
-                )
+        # ----------------------------------------------------
+        # Existing game
+        # ----------------------------------------------------
 
-                print(
-                    "Sending Discord notification."
-                )
+        previous = games_state.get(
+            game_id
+        )
 
-                send_discord(
-                    game
-                )
+        # ----------------------------------------------------
+        # Completely new game
+        # ----------------------------------------------------
 
-                games_state[
-                    game_id
-                ] = {
-
-                    "name": name,
-
-                    "score": score,
-
-                    "last_notified_at":
-                        datetime.now(
-                            timezone.utc
-                        ).isoformat(),
-
-                }
-
-                state_changed = True
-
-                continue
-
-            # ------------------------------------------------
-            # 以前没有分数，现在有分数
-            # ------------------------------------------------
-
-            old_score = previous.get(
-                "score"
-            )
-
-            if old_score is None:
-
-                print(
-                    f"SCORE UNLOCKED: "
-                    f"None -> {score}"
-                )
-
-                send_discord(
-                    game
-                )
-
-                previous[
-                    "score"
-                ] = score
-
-                previous[
-                    "last_notified_at"
-                ] = datetime.now(
-                    timezone.utc
-                ).isoformat()
-
-                state_changed = True
-
-                continue
-
-            # ------------------------------------------------
-            # 分数没有变化
-            # ------------------------------------------------
-
-            if float(old_score) == float(score):
-
-                print(
-                    f"Score unchanged: "
-                    f"{old_score}"
-                )
-
-                continue
-
-            # ------------------------------------------------
-            # 分数发生变化
-            # ------------------------------------------------
+        if previous is None:
 
             print(
-                f"SCORE CHANGED: "
-                f"{old_score} -> {score}"
+                "NEW GAME + SCORE."
             )
 
             send_discord(
-                game,
-                old_score=old_score
+                game
             )
+
+            games_state[
+                game_id
+            ] = {
+                "name": name,
+                "score": score,
+                "last_notified_at":
+                    datetime.now(
+                        timezone.utc
+                    ).isoformat()
+            }
+
+            state_changed = True
+
+            continue
+
+        # ----------------------------------------------------
+        # Score was previously unavailable
+        # ----------------------------------------------------
+
+        old_score = previous.get(
+            "score"
+        )
+
+        if old_score is None:
+
+            print(
+                f"SCORE UNLOCKED: "
+                f"None -> {score}"
+            )
+
+            send_discord(
+                game
+            )
+
+            previous[
+                "name"
+            ] = name
 
             previous[
                 "score"
@@ -796,26 +745,53 @@ def main():
 
             state_changed = True
 
-            time.sleep(
-                REQUEST_DELAY
-            )
+            continue
 
-        except requests.HTTPError as e:
+        # ----------------------------------------------------
+        # Score unchanged
+        # ----------------------------------------------------
 
-            print(
-                f"HTTP ERROR for "
-                f"{game_id}: {e}"
-            )
-
-        except Exception as e:
+        if float(old_score) == float(score):
 
             print(
-                f"ERROR for "
-                f"{game_id}: {e}"
+                f"Score unchanged: "
+                f"{old_score}"
             )
+
+            continue
+
+        # ----------------------------------------------------
+        # Score changed
+        # ----------------------------------------------------
+
+        print(
+            f"SCORE CHANGED: "
+            f"{old_score} -> {score}"
+        )
+
+        send_discord(
+            game,
+            old_score=old_score
+        )
+
+        previous[
+            "name"
+        ] = name
+
+        previous[
+            "score"
+        ] = score
+
+        previous[
+            "last_notified_at"
+        ] = datetime.now(
+            timezone.utc
+        ).isoformat()
+
+        state_changed = True
 
     # --------------------------------------------------------
-    # First-run baseline
+    # Finish first run
     # --------------------------------------------------------
 
     if not initialized:
@@ -839,7 +815,7 @@ def main():
         )
 
         print(
-            "NO Discord notifications were sent."
+            "No Discord notifications were sent."
         )
 
         print(
@@ -872,5 +848,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
