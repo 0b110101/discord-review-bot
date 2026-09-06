@@ -623,28 +623,9 @@ def get_reviews(game_id):
 
         return []
 
-
-# ============================================================
-# Review parsing
-# ============================================================
-
 def unwrap_reviews(data):
-
     """
-    OpenCritic review endpoint may return:
-    
-    [
-        {...},
-        {...}
-    ]
-
-    or a wrapped object such as:
-
-    {
-        "data": [...]
-    }
-
-    This function normalizes both forms.
+    Normalize OpenCritic review API response.
     """
 
     if isinstance(data, list):
@@ -682,30 +663,7 @@ def get_reviews(game_id):
             f"{len(reviews)}"
         )
 
-        if reviews:
-
-            print(
-                "  First review structure:"
-            )
-
-            print(
-                json.dumps(
-                    reviews[0],
-                    ensure_ascii=False,
-                    indent=2
-                )[:3000]
-            )
-
         return reviews
-
-    except Exception as e:
-
-        print(
-            f"WARNING: Could not get "
-            f"reviews: {e}"
-        )
-
-        return []
 
     except Exception as e:
 
@@ -720,57 +678,38 @@ def get_reviews(game_id):
 def get_review_publication(review):
 
     """
-    OpenCritic review objects normally
-    contain an outlet object.
+    OpenCritic uses 'Outlet' with a capital O.
     """
 
-    # Most likely structure:
+    # Actual OpenCritic structure:
     #
-    # "outlet": {
-    #     "name": "IGN"
+    # "Outlet": {
+    #     "id": 68,
+    #     "name": "TheSixthAxis"
     # }
 
+    outlet = review.get("Outlet")
+
+    if isinstance(outlet, dict):
+
+        name = outlet.get("name")
+
+        if name:
+            return str(name).strip()
+
+    # Compatibility fallback
     outlet = review.get("outlet")
 
     if isinstance(outlet, dict):
 
-        name = (
-            outlet.get("name")
-            or outlet.get("displayName")
-            or outlet.get("title")
-        )
+        name = outlet.get("name")
 
         if name:
-            return str(name)
+            return str(name).strip()
 
     elif isinstance(outlet, str):
 
-        return outlet
-
-    # Compatibility with alternative API shapes
-
-    for key in (
-        "publication",
-        "critic",
-        "source"
-    ):
-
-        value = review.get(key)
-
-        if isinstance(value, dict):
-
-            name = (
-                value.get("name")
-                or value.get("displayName")
-                or value.get("title")
-            )
-
-            if name:
-                return str(name)
-
-        elif isinstance(value, str):
-
-            return value
+        return outlet.strip()
 
     return None
 
@@ -778,77 +717,128 @@ def get_review_publication(review):
 def get_review_score(review):
 
     """
-    Extract the original review score.
+    Return the raw numeric review score.
     """
 
-    value = review.get("score")
+    score = review.get("score")
 
-    if value is not None:
-        return value
+    if score is not None:
+        return score
 
-    value = review.get("rating")
+    score = review.get("rating")
 
-    if value is not None:
-        return value
-
-    value = review.get("ratingValue")
-
-    if value is not None:
-        return value
+    if score is not None:
+        return score
 
     return None
 
 
 def get_review_score_display(review):
 
-    score = get_review_score(
-        review
-    )
+    """
+    Convert OpenCritic's internal review score
+    into the original publication format.
+
+    Examples:
+
+        score = 80
+        base = 10
+        -> 8 / 10
+
+        score = 83
+        base = 100
+        -> 83 / 100
+
+        score = 4.5
+        base = 5
+        -> 4.5 / 5
+    """
+
+    score = get_review_score(review)
 
     if score is None:
         return None
 
-    # Example:
-    #
-    # "score": {
-    #     "value": 4.5,
-    #     "max": 5
-    # }
+    score_format = review.get("ScoreFormat")
 
-    if isinstance(score, dict):
+    # Actual OpenCritic structure
+    if isinstance(score_format, dict):
 
-        value = (
-            score.get("value")
-            or score.get("score")
+        base = score_format.get("base")
+
+        score_display = (
+            score_format.get("scoreDisplay")
         )
 
-        maximum = (
-            score.get("max")
-            or score.get("outOf")
-            or score.get("maximum")
-        )
+        if base is not None:
 
-        if value is None:
-            return None
+            try:
 
-        if maximum is not None:
+                numeric_score = float(score)
+                numeric_base = float(base)
+
+                # OpenCritic stores scores normalized
+                # to 100 in many formats.
+                #
+                # Example:
+                # score = 80
+                # base = 10
+                #
+                # Display = 8 / 10
+
+                if numeric_base != 100:
+
+                    # If the raw score is larger than
+                    # the publication's maximum,
+                    # it is probably normalized to 100.
+
+                    if numeric_score > numeric_base:
+
+                        display_score = (
+                            numeric_score
+                            / 100
+                            * numeric_base
+                        )
+
+                    else:
+
+                        display_score = numeric_score
+
+                else:
+
+                    display_score = numeric_score
+
+                return (
+                    f"{format_number(display_score)}"
+                    f" / "
+                    f"{format_number(numeric_base)}"
+                )
+
+            except (
+                TypeError,
+                ValueError
+            ):
+                pass
+
+        # Fallback using scoreDisplay
+        if score_display:
 
             return (
-                f"{format_number(value)}"
-                f" / "
-                f"{format_number(maximum)}"
+                f"{format_number(score)}"
+                f"{score_display}"
             )
 
-        return format_number(
-            value
-        )
-
-    return format_number(
-        score
-    )
+    # Generic fallback
+    return format_number(score)
 
 
 def get_top_reviews(reviews):
+
+    """
+    Return up to five unique critic outlets.
+
+    The order is the order returned by OpenCritic.
+    """
 
     usable = []
 
@@ -896,15 +886,16 @@ def get_top_reviews(reviews):
         usable.append(
             {
                 "publication":
-                    publication.strip(),
+                    publication,
                 "score":
                     score
             }
         )
 
-    # Keep the first five returned by
-    # OpenCritic.
-    return usable[:5]
+        if len(usable) >= 5:
+            break
+
+    return usable
 
 # ============================================================
 # Image helpers
@@ -1745,7 +1736,28 @@ def send_discord(
         "Discord notification sent."
     )
 
+def format_number(value):
+    """
+    Format a number without unnecessary trailing zeros.
 
+    Examples:
+        10.0  -> "10"
+        4.0   -> "4"
+        4.5   -> "4.5"
+        83.0  -> "83"
+    """
+
+    try:
+        value = float(value)
+
+        if value.is_integer():
+            return str(int(value))
+
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+
+    except (TypeError, ValueError):
+        return str(value)
+        
 # ============================================================
 # Main
 # ============================================================
