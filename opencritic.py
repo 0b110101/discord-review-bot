@@ -628,59 +628,173 @@ def get_reviews(game_id):
 # Review parsing
 # ============================================================
 
+def unwrap_reviews(data):
+
+    """
+    OpenCritic review endpoint may return:
+    
+    [
+        {...},
+        {...}
+    ]
+
+    or a wrapped object such as:
+
+    {
+        "data": [...]
+    }
+
+    This function normalizes both forms.
+    """
+
+    if isinstance(data, list):
+        return data
+
+    if isinstance(data, dict):
+
+        for key in (
+            "data",
+            "reviews",
+            "results",
+            "items"
+        ):
+
+            value = data.get(key)
+
+            if isinstance(value, list):
+                return value
+
+    return []
+
+
+def get_reviews(game_id):
+
+    try:
+
+        data = api_get(
+            f"/review/game/{game_id}"
+        )
+
+        reviews = unwrap_reviews(data)
+
+        print(
+            f"  Review records returned: "
+            f"{len(reviews)}"
+        )
+
+        if reviews:
+
+            print(
+                "  First review structure:"
+            )
+
+            print(
+                json.dumps(
+                    reviews[0],
+                    ensure_ascii=False,
+                    indent=2
+                )[:3000]
+            )
+
+        return reviews
+
+    except Exception as e:
+
+        print(
+            f"WARNING: Could not get "
+            f"reviews: {e}"
+        )
+
+        return []
+
+    except Exception as e:
+
+        print(
+            f"WARNING: Could not get "
+            f"reviews: {e}"
+        )
+
+        return []
+
+
 def get_review_publication(review):
 
-    publication = (
-        review.get(
-            "publication"
-        )
-        or review.get(
-            "critic"
-        )
-        or review.get(
-            "outlet"
-        )
-        or review.get(
-            "source"
-        )
-    )
+    """
+    OpenCritic review objects normally
+    contain an outlet object.
+    """
 
-    if isinstance(
-        publication,
-        dict
+    # Most likely structure:
+    #
+    # "outlet": {
+    #     "name": "IGN"
+    # }
+
+    outlet = review.get("outlet")
+
+    if isinstance(outlet, dict):
+
+        name = (
+            outlet.get("name")
+            or outlet.get("displayName")
+            or outlet.get("title")
+        )
+
+        if name:
+            return str(name)
+
+    elif isinstance(outlet, str):
+
+        return outlet
+
+    # Compatibility with alternative API shapes
+
+    for key in (
+        "publication",
+        "critic",
+        "source"
     ):
 
-        return (
-            publication.get("name")
-            or publication.get("displayName")
-            or publication.get("title")
-        )
+        value = review.get(key)
 
-    if isinstance(
-        publication,
-        str
-    ):
+        if isinstance(value, dict):
 
-        return publication
+            name = (
+                value.get("name")
+                or value.get("displayName")
+                or value.get("title")
+            )
+
+            if name:
+                return str(name)
+
+        elif isinstance(value, str):
+
+            return value
 
     return None
 
 
 def get_review_score(review):
 
-    for key in (
-        "score",
-        "rating",
-        "ratingValue"
-    ):
+    """
+    Extract the original review score.
+    """
 
-        value = review.get(
-            key
-        )
+    value = review.get("score")
 
-        if value is not None:
+    if value is not None:
+        return value
 
-            return value
+    value = review.get("rating")
+
+    if value is not None:
+        return value
+
+    value = review.get("ratingValue")
+
+    if value is not None:
+        return value
 
     return None
 
@@ -692,18 +806,16 @@ def get_review_score_display(review):
     )
 
     if score is None:
-
         return None
 
-    # Some API versions return:
-    # score = 83
-    # score = 4.5
-    # score = {"value": 4.5, "max": 5}
+    # Example:
+    #
+    # "score": {
+    #     "value": 4.5,
+    #     "max": 5
+    # }
 
-    if isinstance(
-        score,
-        dict
-    ):
+    if isinstance(score, dict):
 
         value = (
             score.get("value")
@@ -717,7 +829,6 @@ def get_review_score_display(review):
         )
 
         if value is None:
-
             return None
 
         if maximum is not None:
@@ -732,43 +843,10 @@ def get_review_score_display(review):
             value
         )
 
-    # Direct numeric score
     return format_number(
         score
     )
 
-
-def format_number(value):
-
-    try:
-
-        number = float(
-            value
-        )
-
-        if number.is_integer():
-
-            return str(
-                int(number)
-            )
-
-        return (
-            f"{number:.2f}"
-            .rstrip("0")
-            .rstrip(".")
-        )
-
-    except (
-        TypeError,
-        ValueError
-    ):
-
-        return str(value)
-
-
-# ============================================================
-# Select top 5 critics
-# ============================================================
 
 def get_top_reviews(reviews):
 
@@ -782,7 +860,6 @@ def get_top_reviews(reviews):
             review,
             dict
         ):
-
             continue
 
         publication = (
@@ -797,27 +874,37 @@ def get_top_reviews(reviews):
             )
         )
 
-        if not publication or not score:
-
+        if not publication:
             continue
 
-        key = publication.lower()
-
-        if key in seen:
-
+        if not score:
             continue
 
-        seen.add(key)
+        normalized_name = (
+            publication
+            .strip()
+            .lower()
+        )
+
+        if normalized_name in seen:
+            continue
+
+        seen.add(
+            normalized_name
+        )
 
         usable.append(
             {
-                "publication": publication,
-                "score": score
+                "publication":
+                    publication.strip(),
+                "score":
+                    score
             }
         )
 
+    # Keep the first five returned by
+    # OpenCritic.
     return usable[:5]
-
 
 # ============================================================
 # Image helpers
@@ -825,33 +912,47 @@ def get_top_reviews(reviews):
 
 def get_image_url(game):
 
-    images = game.get(
-        "images"
-    )
+    images = game.get("images")
 
-    if not isinstance(
-        images,
-        dict
-    ):
-
+    if not isinstance(images, dict):
         return None
 
-    # Prefer wide banner
-    candidates = [
+    # OpenCritic API:
+    # images.banner = {
+    #     "og": "game/xxxx/o/xxxx.jpg",
+    #     "sm": "game/xxxx/xxxx.jpg"
+    # }
+
+    image_objects = [
         images.get("banner"),
         images.get("masthead"),
         images.get("box"),
-        images.get("square")
+        images.get("square"),
     ]
 
-    for value in candidates:
+    for image_data in image_objects:
 
-        if isinstance(
-            value,
-            str
-        ):
+        if not isinstance(image_data, dict):
+            continue
 
-            return value
+        # Prefer OG/full-size image
+        path = (
+            image_data.get("og")
+            or image_data.get("sm")
+        )
+
+        if not path:
+            continue
+
+        # Already a complete URL
+        if path.startswith("http://") or path.startswith("https://"):
+            return path
+
+        # OpenCritic returns relative image paths
+        return (
+            "https://img.opencritic.com/"
+            + path.lstrip("/")
+        )
 
     return None
 
@@ -1494,9 +1595,11 @@ def create_card(
     # Review count
     # --------------------------------------------------------
 
-    review_count = game.get(
-        "numTopCriticReviews"
-    )
+    review_count = (
+    game.get("numReviews")
+    or game.get("numTopCriticReviews")
+    or 0
+)
 
     if review_count is None:
 
