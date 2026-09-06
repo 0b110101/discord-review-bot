@@ -9,7 +9,6 @@ from pathlib import Path
 from io import BytesIO
 
 import requests
-
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -34,9 +33,43 @@ HEADERS = {
 
 REQUEST_DELAY = 0.3
 
-# Fixed Discord image size
+# 卡片最终导出尺寸（16:9 标准比例）
 CARD_WIDTH = 1200
 CARD_HEIGHT = 675
+
+# 权威媒体优先级列表（按业内公认影响力及官方主页常驻媒体排序）
+POPULAR_OUTLETS = [
+    "IGN",
+    "GameSpot",
+    "PC Gamer",
+    "Eurogamer",
+    "TheGamer",
+    "GamesRadar+",
+    "Polygon",
+    "Kotaku",
+    "Game Informer",
+    "Destructoid",
+    "VGC",
+    "Video Games Chronicle",
+    "VG247",
+    "Giant Bomb",
+    "Edge Magazine",
+    "Rock, Paper, Shotgun",
+    "Easy Allies",
+    "Push Square",
+    "Nintendo Life",
+    "Pure Xbox",
+    "Shacknews",
+    "Hardcore Gamer",
+    "Twinfinite",
+    "Screen Rant",
+    "Inverse",
+    "Wccftech",
+    "Metro GameCentral",
+    "Digital Trends",
+    "Siliconera",
+    "DualShockers",
+]
 
 
 # ============================================================
@@ -44,120 +77,74 @@ CARD_HEIGHT = 675
 # ============================================================
 
 def get_font(size, bold=False):
-
     candidates = []
-
     if bold:
         candidates = [
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
             "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+            "arialbd.ttf",
+            "msyhbd.ttc",
         ]
     else:
         candidates = [
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+            "arial.ttf",
+            "msyh.ttc",
         ]
 
     for path in candidates:
-
         if os.path.exists(path):
-
-            return ImageFont.truetype(
-                path,
-                size
-            )
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                continue
 
     return ImageFont.load_default()
 
 
 # ============================================================
-# Score normalization
+# Score normalization & Formatting
 # ============================================================
 
 def normalize_score(score):
-
     if score is None:
         return None
-
     try:
-
-        return int(
-            round(
-                float(score)
-            )
-        )
-
-    except (
-        TypeError,
-        ValueError
-    ):
-
+        return int(round(float(score)))
+    except (TypeError, ValueError):
         return None
+
+
+def format_number(value):
+    try:
+        value = float(value)
+        if value.is_integer():
+            return str(int(value))
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return str(value)
 
 
 # ============================================================
-# Slug
+# Slug & URL
 # ============================================================
 
 def make_slug(name):
-
     if not name:
         return ""
-
-    name = unicodedata.normalize(
-        "NFKD",
-        str(name)
-    )
-
-    name = "".join(
-        char
-        for char in name
-        if not unicodedata.combining(char)
-    )
-
-    name = name.lower()
-
-    name = name.replace(
-        "'",
-        ""
-    )
-
-    name = name.replace(
-        "’",
-        ""
-    )
-
-    name = re.sub(
-        r"[^a-z0-9]+",
-        "-",
-        name
-    )
-
-    name = re.sub(
-        r"-+",
-        "-",
-        name
-    )
-
+    name = unicodedata.normalize("NFKD", str(name))
+    name = "".join(char for char in name if not unicodedata.combining(char))
+    name = name.lower().replace("'", "").replace("’", "")
+    name = re.sub(r"[^a-z0-9]+", "-", name)
+    name = re.sub(r"-+", "-", name)
     return name.strip("-")
 
 
 def get_opencritic_url(game):
-
     game_id = game.get("id")
-
-    slug = make_slug(
-        game.get(
-            "name",
-            "game"
-        )
-    )
-
-    return (
-        f"https://opencritic.com/game/"
-        f"{game_id}/"
-        f"{slug}"
-    )
+    slug = make_slug(game.get("name", "game"))
+    return f"https://opencritic.com/game/{game_id}/{slug}"
 
 
 # ============================================================
@@ -165,91 +152,28 @@ def get_opencritic_url(game):
 # ============================================================
 
 def api_get(path):
-
     url = API_BASE + path
-
-    print(
-        f"GET {url}"
-    )
-
-    response = requests.get(
-        url,
-        headers=HEADERS,
-        timeout=30
-    )
-
-    print(
-        f"HTTP {response.status_code}"
-    )
-
+    print(f"GET {url}")
+    response = requests.get(url, headers=HEADERS, timeout=30)
+    print(f"HTTP {response.status_code}")
     response.raise_for_status()
-
     try:
-
         return response.json()
-
     except ValueError:
-
-        print(
-            "ERROR: API did not return JSON."
-        )
-
-        print(
-            response.text[:1000]
-        )
-
+        print("ERROR: API did not return JSON.")
+        print(response.text[:1000])
         sys.exit(1)
 
 
-# ============================================================
-# Game list normalization
-# ============================================================
-
 def normalize_games(data):
-
-    if isinstance(
-        data,
-        list
-    ):
-
+    if isinstance(data, list):
         return data
-
-    if isinstance(
-        data,
-        dict
-    ):
-
-        for key in (
-            "data",
-            "games",
-            "results",
-            "items"
-        ):
-
-            value = data.get(
-                key
-            )
-
-            if isinstance(
-                value,
-                list
-            ):
-
+    if isinstance(data, dict):
+        for key in ("data", "games", "results", "items"):
+            value = data.get(key)
+            if isinstance(value, list):
                 return value
-
-    print(
-        "ERROR: Could not find "
-        "game list in API response."
-    )
-
-    print(
-        json.dumps(
-            data,
-            ensure_ascii=False,
-            indent=2
-        )[:3000]
-    )
-
+    print("ERROR: Could not find game list in API response.")
     sys.exit(1)
 
 
@@ -258,661 +182,210 @@ def normalize_games(data):
 # ============================================================
 
 def save_state(state):
-
-    STATE_FILE.parent.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    temp_file = STATE_FILE.with_suffix(
-        ".tmp"
-    )
-
-    with open(
-        temp_file,
-        "w",
-        encoding="utf-8"
-    ) as f:
-
-        json.dump(
-            state,
-            f,
-            ensure_ascii=False,
-            indent=2
-        )
-
-    temp_file.replace(
-        STATE_FILE
-    )
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temp_file = STATE_FILE.with_suffix(".tmp")
+    with open(temp_file, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+    temp_file.replace(STATE_FILE)
 
 
 def load_state():
-
     if not STATE_FILE.exists():
-
-        return {
-            "initialized": False,
-            "games": {}
-        }
-
+        return {"initialized": False, "games": {}}
     try:
-
-        with open(
-            STATE_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
-
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
             state = json.load(f)
-
-        state.setdefault(
-            "initialized",
-            False
-        )
-
-        state.setdefault(
-            "games",
-            {}
-        )
-
-        migrated = False
-
-        for game_id, game_data in state["games"].items():
-
-            if not isinstance(
-                game_data,
-                dict
-            ):
-
-                continue
-
-            old_score = game_data.get(
-                "score"
-            )
-
-            if old_score is None:
-                continue
-
-            new_score = normalize_score(
-                old_score
-            )
-
-            if new_score is not None:
-
-                if old_score != new_score:
-
-                    print(
-                        f"Migrating score "
-                        f"{game_id}: "
-                        f"{old_score} -> "
-                        f"{new_score}"
-                    )
-
-                    game_data[
-                        "score"
-                    ] = new_score
-
-                    migrated = True
-
-        if migrated:
-
-            save_state(
-                state
-            )
-
-            print(
-                "Old scores migrated."
-            )
-
+        state.setdefault("initialized", False)
+        state.setdefault("games", {})
         return state
-
     except Exception as e:
-
-        print(
-            f"ERROR reading state.json: {e}"
-        )
-
+        print(f"ERROR reading state.json: {e}")
         sys.exit(1)
 
 
 # ============================================================
-# Dates
+# Dates & Window
 # ============================================================
 
 def parse_datetime(value):
-
-    if not value:
+    if not value or not isinstance(value, str):
         return None
-
-    if not isinstance(
-        value,
-        str
-    ):
-
-        return None
-
     try:
-
-        return datetime.fromisoformat(
-            value.replace(
-                "Z",
-                "+00:00"
-            )
-        )
-
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-
         try:
-
-            return datetime.strptime(
-                value[:10],
-                "%Y-%m-%d"
-            ).replace(
-                tzinfo=timezone.utc
-            )
-
+            return datetime.strptime(value[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
         except ValueError:
-
             return None
 
 
 def get_release_date(game):
-
-    for field in (
-        "firstReleaseDate",
-        "releaseDate"
-    ):
-
-        parsed = parse_datetime(
-            game.get(field)
-        )
-
+    for field in ("firstReleaseDate", "releaseDate"):
+        parsed = parse_datetime(game.get(field))
         if parsed:
-
             return parsed
-
     return None
 
 
 def is_in_monitor_window(game):
-
-    release_date = get_release_date(
-        game
-    )
-
+    release_date = get_release_date(game)
     if release_date is None:
-
-        print(
-            "  No release date."
-        )
-
         return False
-
-    now = datetime.now(
-        timezone.utc
-    )
-
-    start = (
-        release_date
-        - timedelta(
-            days=PRE_RELEASE_DAYS
-        )
-    )
-
-    end = (
-        release_date
-        + timedelta(
-            days=POST_RELEASE_DAYS
-        )
-    )
-
-    result = (
-        start
-        <= now
-        <= end
-    )
-
-    print(
-        f"  Release: "
-        f"{release_date.isoformat()}"
-    )
-
-    print(
-        f"  Monitor: "
-        f"{start.isoformat()} "
-        f"-> "
-        f"{end.isoformat()}"
-    )
-
-    print(
-        f"  In window: {result}"
-    )
-
-    return result
+    now = datetime.now(timezone.utc)
+    start = release_date - timedelta(days=PRE_RELEASE_DAYS)
+    end = release_date + timedelta(days=POST_RELEASE_DAYS)
+    return start <= now <= end
 
 
 # ============================================================
-# Discovery
+# Discovery & Detail
 # ============================================================
 
 def get_candidate_games():
-
     candidates = {}
-
-    endpoints = [
-        "/game/upcoming",
-        "/game/recently-released"
-    ]
-
+    endpoints = ["/game/upcoming", "/game/recently-released"]
     for endpoint in endpoints:
-
-        print(
-            "\n=========================================="
-        )
-
-        print(
-            f"Discovering games: "
-            f"{endpoint}"
-        )
-
-        data = api_get(
-            endpoint
-        )
-
-        games = normalize_games(
-            data
-        )
-
-        print(
-            f"Returned games: "
-            f"{len(games)}"
-        )
-
+        print(f"Discovering games: {endpoint}")
+        data = api_get(endpoint)
+        games = normalize_games(data)
         for game in games:
+            game_id = game.get("id")
+            if game_id is not None:
+                candidates[str(game_id)] = game
+        time.sleep(REQUEST_DELAY)
+    print(f"Unique candidate games: {len(candidates)}")
+    return list(candidates.values())
 
-            game_id = game.get(
-                "id"
-            )
-
-            if game_id is None:
-                continue
-
-            candidates[
-                str(game_id)
-            ] = game
-
-        time.sleep(
-            REQUEST_DELAY
-        )
-
-    print(
-        "\n=========================================="
-    )
-
-    print(
-        f"Unique candidate games: "
-        f"{len(candidates)}"
-    )
-
-    return list(
-        candidates.values()
-    )
-
-
-# ============================================================
-# Game detail
-# ============================================================
 
 def get_game(game_id):
-
-    return api_get(
-        f"/game/{game_id}"
-    )
+    return api_get(f"/game/{game_id}")
 
 
 # ============================================================
-# Review data
+# Review data & 权威媒体加权处理
 # ============================================================
-
-def get_reviews(game_id):
-
-    try:
-
-        data = api_get(
-            f"/review/game/{game_id}"
-        )
-
-        if isinstance(
-            data,
-            list
-        ):
-
-            return data
-
-        if isinstance(
-            data,
-            dict
-        ):
-
-            for key in (
-                "data",
-                "reviews",
-                "results",
-                "items"
-            ):
-
-                value = data.get(
-                    key
-                )
-
-                if isinstance(
-                    value,
-                    list
-                ):
-
-                    return value
-
-        return []
-
-    except Exception as e:
-
-        print(
-            f"WARNING: Could not get "
-            f"reviews: {e}"
-        )
-
-        return []
 
 def unwrap_reviews(data):
-    """
-    Normalize OpenCritic review API response.
-    """
-
     if isinstance(data, list):
         return data
-
     if isinstance(data, dict):
-
-        for key in (
-            "data",
-            "reviews",
-            "results",
-            "items"
-        ):
-
-            value = data.get(key)
-
-            if isinstance(value, list):
-                return value
-
+        for key in ("data", "reviews", "results", "items"):
+            val = data.get(key)
+            if isinstance(val, list):
+                return val
     return []
 
 
 def get_reviews(game_id):
-
     try:
-
-        data = api_get(
-            f"/review/game/{game_id}"
-        )
-
-        reviews = unwrap_reviews(data)
-
-        print(
-            f"  Review records returned: "
-            f"{len(reviews)}"
-        )
-
-        return reviews
-
+        data = api_get(f"/review/game/{game_id}")
+        return unwrap_reviews(data)
     except Exception as e:
-
-        print(
-            f"WARNING: Could not get "
-            f"reviews: {e}"
-        )
-
+        print(f"WARNING: Could not get reviews: {e}")
         return []
 
 
 def get_review_publication(review):
-
-    """
-    OpenCritic uses 'Outlet' with a capital O.
-    """
-
-    # Actual OpenCritic structure:
-    #
-    # "Outlet": {
-    #     "id": 68,
-    #     "name": "TheSixthAxis"
-    # }
-
-    outlet = review.get("Outlet")
-
+    outlet = review.get("Outlet") or review.get("outlet")
     if isinstance(outlet, dict):
-
-        name = outlet.get("name")
-
-        if name:
-            return str(name).strip()
-
-    # Compatibility fallback
-    outlet = review.get("outlet")
-
-    if isinstance(outlet, dict):
-
-        name = outlet.get("name")
-
-        if name:
-            return str(name).strip()
-
-    elif isinstance(outlet, str):
-
+        return outlet.get("name")
+    if isinstance(outlet, str):
         return outlet.strip()
-
-    return None
-
-
-def get_review_score(review):
-
-    """
-    Return the raw numeric review score.
-    """
-
-    score = review.get("score")
-
-    if score is not None:
-        return score
-
-    score = review.get("rating")
-
-    if score is not None:
-        return score
-
     return None
 
 
 def get_review_score_display(review):
-
-    """
-    Convert OpenCritic's internal review score
-    into the original publication format.
-
-    Examples:
-
-        score = 80
-        base = 10
-        -> 8 / 10
-
-        score = 83
-        base = 100
-        -> 83 / 100
-
-        score = 4.5
-        base = 5
-        -> 4.5 / 5
-    """
-
-    score = get_review_score(review)
-
+    score = review.get("score") if review.get("score") is not None else review.get("rating")
     if score is None:
         return None
 
     score_format = review.get("ScoreFormat")
-
-    # Actual OpenCritic structure
     if isinstance(score_format, dict):
-
         base = score_format.get("base")
-
-        score_display = (
-            score_format.get("scoreDisplay")
-        )
-
         if base is not None:
-
             try:
-
-                numeric_score = float(score)
-                numeric_base = float(base)
-
-                # OpenCritic stores scores normalized
-                # to 100 in many formats.
-                #
-                # Example:
-                # score = 80
-                # base = 10
-                #
-                # Display = 8 / 10
-
-                if numeric_base != 100:
-
-                    # If the raw score is larger than
-                    # the publication's maximum,
-                    # it is probably normalized to 100.
-
-                    if numeric_score > numeric_base:
-
-                        display_score = (
-                            numeric_score
-                            / 100
-                            * numeric_base
-                        )
-
-                    else:
-
-                        display_score = numeric_score
-
+                num_score = float(score)
+                num_base = float(base)
+                if num_base != 100 and num_score > num_base:
+                    display_score = (num_score / 100.0) * num_base
                 else:
-
-                    display_score = numeric_score
-
-                return (
-                    f"{format_number(display_score)}"
-                    f" / "
-                    f"{format_number(numeric_base)}"
-                )
-
-            except (
-                TypeError,
-                ValueError
-            ):
+                    display_score = num_score
+                return f"{format_number(display_score)} / {format_number(num_base)}"
+            except (TypeError, ValueError):
                 pass
 
-        # Fallback using scoreDisplay
-        if score_display:
-
-            return (
-                f"{format_number(score)}"
-                f"{score_display}"
-            )
-
-    # Generic fallback
     return format_number(score)
 
 
+def get_outlet_rank(outlet_name):
+    """计算媒体知名度优先级，越小优先级越高"""
+    if not outlet_name:
+        return 999
+    name_clean = outlet_name.strip().lower()
+    for rank, target in enumerate(POPULAR_OUTLETS):
+        target_clean = target.lower()
+        if target_clean == name_clean:
+            return rank
+        if target_clean in name_clean:
+            return rank + 40
+    return 999
+
+
 def get_top_reviews(reviews):
-
     """
-    Return up to five unique critic outlets.
-
-    The order is the order returned by OpenCritic.
+    按媒体影响力权重筛选出前 5 家媒体评分
+    优先展现 IGN, GameSpot, PC Gamer, Eurogamer 等一线媒体
     """
-
-    usable = []
-
     seen = set()
+    candidates = []
 
     for review in reviews:
-
-        if not isinstance(
-            review,
-            dict
-        ):
+        if not isinstance(review, dict):
             continue
 
-        publication = (
-            get_review_publication(
-                review
-            )
-        )
+        publication = get_review_publication(review)
+        score = get_review_score_display(review)
 
-        score = (
-            get_review_score_display(
-                review
-            )
-        )
-
-        if not publication:
+        if not publication or not score:
             continue
 
-        if not score:
+        norm_name = publication.strip().lower()
+        if norm_name in seen:
             continue
+        seen.add(norm_name)
 
-        normalized_name = (
-            publication
-            .strip()
-            .lower()
-        )
+        outlet = review.get("Outlet") or {}
+        is_top = outlet.get("isTopCritic", False) or review.get("isTopCritic", False)
+        rank = get_outlet_rank(publication)
 
-        if normalized_name in seen:
-            continue
+        candidates.append({
+            "publication": publication,
+            "score": score,
+            "rank": rank,
+            "is_top": 1 if is_top else 0
+        })
 
-        seen.add(
-            normalized_name
-        )
+    # 优先排序：白名单权重 -> 是否为 Top Critic
+    candidates.sort(key=lambda x: (x["rank"], -x["is_top"]))
 
-        usable.append(
-            {
-                "publication":
-                    publication,
-                "score":
-                    score
-            }
-        )
-
-        if len(usable) >= 5:
-            break
+    usable = []
+    for item in candidates[:5]:
+        usable.append({
+            "publication": item["publication"],
+            "score": item["score"]
+        })
 
     return usable
+
 
 # ============================================================
 # Image helpers
 # ============================================================
 
 def get_image_url(game):
-
     images = game.get("images")
-
     if not isinstance(images, dict):
         return None
-
-    # OpenCritic API:
-    # images.banner = {
-    #     "og": "game/xxxx/o/xxxx.jpg",
-    #     "sm": "game/xxxx/xxxx.jpg"
-    # }
 
     image_objects = [
         images.get("banner"),
@@ -922,758 +395,215 @@ def get_image_url(game):
     ]
 
     for image_data in image_objects:
-
         if not isinstance(image_data, dict):
             continue
-
-        # Prefer OG/full-size image
-        path = (
-            image_data.get("og")
-            or image_data.get("sm")
-        )
-
+        path = image_data.get("og") or image_data.get("sm")
         if not path:
             continue
-
-        # Already a complete URL
         if path.startswith("http://") or path.startswith("https://"):
             return path
-
-        # OpenCritic returns relative image paths
-        return (
-            "https://img.opencritic.com/"
-            + path.lstrip("/")
-        )
+        return "https://img.opencritic.com/" + path.lstrip("/")
 
     return None
 
 
 def download_image(url):
-
     if not url:
-
         return None
-
     try:
-
-        response = requests.get(
-            url,
-            timeout=30
-        )
-
+        response = requests.get(url, timeout=30)
         response.raise_for_status()
-
-        return Image.open(
-            BytesIO(
-                response.content
-            )
-        ).convert(
-            "RGB"
-        )
-
+        return Image.open(BytesIO(response.content)).convert("RGB")
     except Exception as e:
-
-        print(
-            f"WARNING: Could not "
-            f"download image: {e}"
-        )
-
+        print(f"WARNING: Could not download image: {e}")
         return None
 
 
-def crop_cover(image):
-
+def crop_and_round_cover(image, target_size, radius):
+    """等比居中裁切并添加圆角蒙版，防止直角穿透"""
+    tw, th = target_size
     if image is None:
-
-        return Image.new(
-            "RGB",
-            (
-                700,
-                430
-            ),
-            (
-                35,
-                38,
-                45
-            )
-        )
-
-    target_ratio = 700 / 430
-
-    width, height = image.size
-
-    ratio = width / height
-
-    if ratio > target_ratio:
-
-        new_width = int(
-            height
-            * target_ratio
-        )
-
-        left = (
-            width
-            - new_width
-        ) // 2
-
-        image = image.crop(
-            (
-                left,
-                0,
-                left + new_width,
-                height
-            )
-        )
-
+        base = Image.new("RGBA", (tw, th), (30, 36, 48, 255))
     else:
-
-        new_height = int(
-            width
-            / target_ratio
-        )
-
-        top = (
-            height
-            - new_height
-        ) // 2
-
-        image = image.crop(
-            (
-                0,
-                top,
-                width,
-                top + new_height
-            )
-        )
-
-    return image.resize(
-        (
-            700,
-            430
-        ),
-        Image.Resampling.LANCZOS
-    )
-
-
-# ============================================================
-# Drawing helpers
-# ============================================================
-
-def rounded_rectangle(
-    draw,
-    xy,
-    radius,
-    fill,
-    outline=None,
-    width=1
-):
-
-    draw.rounded_rectangle(
-        xy,
-        radius=radius,
-        fill=fill,
-        outline=outline,
-        width=width
-    )
-
-
-def draw_score_ring(
-    draw,
-    center,
-    radius,
-    score,
-    label,
-    font_score,
-    font_label
-):
-
-    x, y = center
-
-    # Background ring
-    draw.ellipse(
-        (
-            x - radius,
-            y - radius,
-            x + radius,
-            y + radius
-        ),
-        outline=(
-            65,
-            72,
-            84
-        ),
-        width=12
-    )
-
-    # Orange/red ring
-    angle = (
-        360
-        * max(
-            0,
-            min(
-                100,
-                score
-            )
-        )
-        / 100
-    )
-
-    draw.arc(
-        (
-            x - radius,
-            y - radius,
-            x + radius,
-            y + radius
-        ),
-        start=-90,
-        end=-90 + angle,
-        fill=(
-            255,
-            85,
-            40
-        ),
-        width=12
-    )
-
-    score_text = str(
-        score
-    )
-
-    bbox = draw.textbbox(
-        (0, 0),
-        score_text,
-        font=font_score
-    )
-
-    text_width = (
-        bbox[2]
-        - bbox[0]
-    )
-
-    text_height = (
-        bbox[3]
-        - bbox[1]
-    )
-
-    draw.text(
-        (
-            x - text_width / 2,
-            y - text_height / 2 - 3
-        ),
-        score_text,
-        fill=(
-            245,
-            247,
-            250
-        ),
-        font=font_score
-    )
-
-    bbox = draw.textbbox(
-        (0, 0),
-        label,
-        font=font_label
-    )
-
-    label_width = (
-        bbox[2]
-        - bbox[0]
-    )
-
-    draw.text(
-        (
-            x - label_width / 2,
-            y + radius + 12
-        ),
-        label,
-        fill=(
-            170,
-            180,
-            195
-        ),
-        font=font_label
-    )
-
-
-# ============================================================
-# Create card
-# ============================================================
-
-def create_card(
-    game,
-    top_reviews,
-    output_path,
-    old_score=None
-):
-
-    width = CARD_WIDTH
-    height = CARD_HEIGHT
-
-    # --------------------------------------------------------
-    # Colors
-    # --------------------------------------------------------
-
-    bg = (
-        23,
-        28,
-        38
-    )
-
-    panel = (
-        29,
-        35,
-        47
-    )
-
-    white = (
-        245,
-        247,
-        250
-    )
-
-    muted = (
-        170,
-        180,
-        195
-    )
-
-    orange = (
-        255,
-        82,
-        35
-    )
-
-    blue = (
-        55,
-        160,
-        255
-    )
-
-    line = (
-        55,
-        64,
-        80
-    )
-
-    # --------------------------------------------------------
-    # Canvas
-    # --------------------------------------------------------
-
-    image = Image.new(
-        "RGB",
-        (
-            width,
-            height
-        ),
-        bg
-    )
-
-    draw = ImageDraw.Draw(
-        image
-    )
-
-    # --------------------------------------------------------
-    # Fonts
-    # --------------------------------------------------------
-
-    font_title = get_font(
-        38,
-        True
-    )
-
-    font_score = get_font(
-        48,
-        True
-    )
-
-    font_big = get_font(
-        42,
-        True
-    )
-
-    font_label = get_font(
-        20,
-        False
-    )
-
-    font_media = get_font(
-        22,
-        False
-    )
-
-    font_media_score = get_font(
-        22,
-        True
-    )
-
-    font_small = get_font(
-        18,
-        False
-    )
-
-    font_small_bold = get_font(
-        18,
-        True
-    )
-
-    # --------------------------------------------------------
-    # Outer border
-    # --------------------------------------------------------
-
-    rounded_rectangle(
-        draw,
-        (
-            18,
-            18,
-            width - 18,
-            height - 18
-        ),
-        18,
-        fill=bg,
-        outline=line,
-        width=3
-    )
-
-    # --------------------------------------------------------
-    # Title
-    # --------------------------------------------------------
-
-    name = game.get(
-        "name",
-        "Unknown Game"
-    )
-
-    title = name
-
-    # Prevent extremely long title
-    while (
-        draw.textbbox(
-            (0, 0),
-            title,
-            font=font_title
-        )[2]
-        > 760
-        and len(title) > 10
-    ):
-
-        title = title[:-4].rstrip() + "..."
-
-    draw.text(
-        (
-            48,
-            45
-        ),
-        title,
-        fill=white,
-        font=font_title
-    )
-
-    # OpenCritic text
-    draw.text(
-        (
-            1010,
-            54
-        ),
-        "OpenCritic",
-        fill=white,
-        font=font_small_bold
-    )
-
-    # --------------------------------------------------------
-    # Game image
-    # --------------------------------------------------------
-
-    image_url = get_image_url(
-        game
-    )
-
-    cover = download_image(
-        image_url
-    )
-
-    cover = crop_cover(
-        cover
-    )
-
-    cover_x = 48
-    cover_y = 115
-
-    image.paste(
-        cover,
-        (
-            cover_x,
-            cover_y
-        )
-    )
-
-    # Image border
-    draw.rounded_rectangle(
-        (
-            cover_x,
-            cover_y,
-            cover_x + 700,
-            cover_y + 430
-        ),
-        radius=12,
-        outline=line,
-        width=3
-    )
-
-    # --------------------------------------------------------
-    # Main score
-    # --------------------------------------------------------
-
-    score = normalize_score(
-        game.get(
-            "topCriticScore"
-        )
-    )
-
-    if score is None:
-        score = 0
-
-    draw_score_ring(
-        draw,
-        (
-            870,
-            190
-        ),
-        58,
-        score,
-        "Top Critic Average",
-        font_score,
-        font_label
-    )
-
-    # --------------------------------------------------------
-    # Score change
-    # --------------------------------------------------------
-
-    if old_score is not None:
-
-        change = (
-            score
-            - old_score
-        )
-
-        if change > 0:
-
-            change_text = (
-                f"+{change}"
-            )
-
+        target_ratio = tw / th
+        width, height = image.size
+        ratio = width / height
+
+        if ratio > target_ratio:
+            new_width = int(height * target_ratio)
+            left = (width - new_width) // 2
+            image = image.crop((left, 0, left + new_width, height))
         else:
+            new_height = int(width / target_ratio)
+            top = (height - new_height) // 2
+            image = image.crop((0, top, width, top + new_height))
 
-            change_text = str(
-                change
-            )
+        base = image.resize((tw, th), Image.Resampling.LANCZOS).convert("RGBA")
 
-        draw.text(
-            (
-                820,
-                290
-            ),
-            f"{old_score} → {score} "
-            f"({change_text})",
-            fill=orange,
-            font=font_small_bold
-        )
+    # 创建圆角遮罩
+    mask = Image.new("L", (tw, th), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([(0, 0), (tw, th)], radius=radius, fill=255)
+    base.putalpha(mask)
+    return base
 
-    # --------------------------------------------------------
-    # Top 5 media
-    # --------------------------------------------------------
 
-    media_y = 330
+# ============================================================
+# Vector Drawing helpers
+# ============================================================
 
-    for review in top_reviews:
+def draw_ring(draw, center, radius, width, percent, ring_bg, ring_fill):
+    """绘制平滑圆环进度条"""
+    x, y = center
+    box = [x - radius, y - radius, x + radius, y + radius]
+    draw.arc(box, start=0, end=360, fill=ring_bg, width=width)
+    if percent > 0:
+        angle = (360.0 * max(0.0, min(100.0, percent))) / 100.0
+        draw.arc(box, start=-90, end=-90 + angle, fill=ring_fill, width=width)
 
-        publication = review[
-            "publication"
-        ]
 
-        review_score = review[
-            "score"
-        ]
+def draw_speech_bubble(draw, x, y, width, height, color, line_w=2):
+    """绘制左下角评论气泡图标"""
+    r = int(height * 0.2)
+    # 主体圆角矩形
+    draw.rounded_rectangle([x, y, x + width, y + height], radius=r, outline=color, width=line_w)
+    # 小尾巴
+    tail_top = y + height - line_w
+    tail_pts = [
+        (x + int(width * 0.25), tail_top),
+        (x + int(width * 0.45), tail_top),
+        (x + int(width * 0.2), y + height + int(height * 0.3)),
+    ]
+    draw.polygon(tail_pts, fill=color)
 
-        # Keep long publication names readable
-        if len(publication) > 22:
 
-            publication = (
-                publication[:20]
-                + "..."
-            )
+def draw_opencritic_logo(draw, x, y, radius, color):
+    """矢量绘制 OpenCritic 经典标志"""
+    draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=color)
+    # 内部镂空圆点与切槽
+    inner_r = radius * 0.32
+    draw.ellipse([x - inner_r, y - inner_r, x + inner_r, y + inner_r], fill=(19, 24, 34))
+    line_w = max(2, int(radius * 0.18))
+    draw.line([(x, y - radius), (x, y + radius)], fill=(19, 24, 34), width=line_w)
+    draw.line([(x - radius, y), (x + radius, y)], fill=(19, 24, 34), width=line_w)
 
-        draw.text(
-            (
-                800,
-                media_y
-            ),
-            publication,
-            fill=white,
-            font=font_media
-        )
 
-        bbox = draw.textbbox(
-            (
-                0,
-                0
-            ),
-            review_score,
-            font=font_media_score
-        )
+# ============================================================
+# Create Card (2x 超采样渲染)
+# ============================================================
 
-        score_width = (
-            bbox[2]
-            - bbox[0]
-        )
+def create_card(game, top_reviews, output_path, old_score=None):
+    scale = 2
+    w = CARD_WIDTH * scale
+    h = CARD_HEIGHT * scale
 
-        draw.text(
-            (
-                1125 - score_width,
-                media_y
-            ),
-            review_score,
-            fill=white,
-            font=font_media_score
-        )
+    # 色彩方案（高保真还原）
+    c_bg = (19, 24, 34)
+    c_border = (38, 46, 62)
+    c_white = (255, 255, 255)
+    c_muted = (142, 154, 175)
+    c_orange = (255, 87, 34)
+    c_ring_bg = (42, 49, 66)
 
-        media_y += 48
+    canvas = Image.new("RGBA", (w, h), c_bg)
+    draw = ImageDraw.Draw(canvas)
 
-    # --------------------------------------------------------
-    # Critics recommend
-    # --------------------------------------------------------
-
-    recommended = game.get(
-        "percentRecommended"
+    # 1. 外边框
+    draw.rounded_rectangle(
+        [20 * scale, 20 * scale, w - 20 * scale, h - 20 * scale],
+        radius=20 * scale,
+        outline=c_border,
+        width=2 * scale
     )
 
-    if recommended is not None:
+    # 2. 顶部 Title
+    name = game.get("name", "Unknown Game")
+    font_title = get_font(38 * scale, bold=True)
+    draw.text((55 * scale, 45 * scale), name, fill=c_white, font=font_title)
 
-        try:
+    # 右上角 OpenCritic Logo
+    logo_center = (w - 180 * scale, 68 * scale)
+    draw_opencritic_logo(draw, logo_center[0], logo_center[1], radius=15 * scale, color=c_orange)
+    font_brand = get_font(22 * scale, bold=True)
+    draw.text((w - 152 * scale, 55 * scale), "OpenCritic", fill=c_white, font=font_brand)
 
-            recommended = round(
-                float(
-                    recommended
-                )
-            )
+    # 3. 左侧游戏海报（标准 16:9 裁剪，带圆角，杜绝直角穿模）
+    cover_w = 640 * scale
+    cover_h = 360 * scale
+    cover_x = 55 * scale
+    cover_y = 120 * scale
 
-        except (
-            TypeError,
-            ValueError
-        ):
+    cover_raw = download_image(get_image_url(game))
+    cover_rounded = crop_and_round_cover(cover_raw, (cover_w, cover_h), radius=16 * scale)
+    canvas.paste(cover_rounded, (cover_x, cover_y), cover_rounded)
 
-            recommended = None
+    # 4. 右上 Top Critic Average（并排圆环）
+    score = normalize_score(game.get("topCriticScore")) or 0
+    ring_score_center = (800 * scale, 180 * scale)
+    draw_ring(draw, ring_score_center, radius=48 * scale, width=9 * scale, percent=score, ring_bg=c_ring_bg, ring_fill=c_orange)
 
-    if recommended is not None:
+    font_main_score = get_font(36 * scale, bold=True)
+    draw.text(ring_score_center, str(score), fill=c_white, font=font_main_score, anchor="mm")
 
-        draw_score_ring(
-            draw,
-            (
-                145,
-                595
-            ),
-            45,
-            recommended,
-            "Critics Recommend",
-            get_font(
-                30,
-                True
-            ),
-            font_small
-        )
+    font_avg_label = get_font(20 * scale, bold=False)
+    draw.text((865 * scale, 160 * scale), "Top Critic\nAverage", fill=c_white, font=font_avg_label, spacing=4 * scale)
 
-    # --------------------------------------------------------
-    # Review count
-    # --------------------------------------------------------
+    # 分数变动提示
+    if old_score is not None:
+        diff = score - old_score
+        sign = f"+{diff}" if diff > 0 else str(diff)
+        draw.text((865 * scale, 215 * scale), f"{old_score} → {score} ({sign})", fill=c_orange, font=get_font(15 * scale, bold=True))
 
-    review_count = (
-    game.get("numReviews")
-    or game.get("numTopCriticReviews")
-    or 0
-)
+    # 5. 右侧权威媒体评分列表（严格右对齐）
+    media_start_y = 295 * scale
+    media_row_gap = 52 * scale
+    right_align_x = w - 60 * scale
 
-    if review_count is None:
+    font_media = get_font(20 * scale, bold=False)
+    font_media_score = get_font(21 * scale, bold=True)
 
-        review_count = 0
+    for i, item in enumerate(top_reviews):
+        cur_y = media_start_y + i * media_row_gap
+        # 媒体名（左对齐）
+        pub_name = item["publication"]
+        if len(pub_name) > 22:
+            pub_name = pub_name[:20] + "..."
+        draw.text((750 * scale, cur_y), pub_name, fill=c_white, font=font_media)
+        # 分数（右对齐）
+        draw.text((right_align_x, cur_y), item["score"], fill=c_white, font=font_media_score, anchor="ra")
 
-    draw.text(
-        (
-            275,
-            565
-        ),
-        str(
-            review_count
-        ),
-        fill=white,
-        font=font_big
-    )
+    # 6. 左下方指标：Critics Recommend & Critic Reviews
+    # 6.1 Critics Recommend
+    recommended = normalize_score(game.get("percentRecommended")) or 0
+    rec_center = (115 * scale, 560 * scale)
+    draw_ring(draw, rec_center, radius=38 * scale, width=7 * scale, percent=recommended, ring_bg=c_ring_bg, ring_fill=c_orange)
+    draw.text(rec_center, f"{recommended}%", fill=c_white, font=get_font(20 * scale, bold=True), anchor="mm")
 
-    draw.text(
-        (
-            275,
-            615
-        ),
-        "Critic Reviews",
-        fill=muted,
-        font=font_small
-    )
+    draw.text((170 * scale, 542 * scale), "Critics\nRecommend", fill=c_white, font=get_font(18 * scale), spacing=4 * scale)
 
-    # --------------------------------------------------------
-    # Footer
-    # --------------------------------------------------------
+    # 6.2 细竖线分割
+    draw.line([(340 * scale, 535 * scale), (340 * scale, 585 * scale)], fill=c_ring_bg, width=2 * scale)
 
-    draw.text(
-        (
-            915,
-            620
-        ),
-        "View on OpenCritic ↗",
-        fill=blue,
-        font=font_small_bold
-    )
+    # 6.3 Critic Reviews（气泡图标 + 评论数量）
+    draw_speech_bubble(draw, x=375 * scale, y=547 * scale, width=24 * scale, height=18 * scale, color=c_muted, line_w=2 * scale)
+    rev_count = game.get("numReviews") or game.get("numTopCriticReviews") or 0
+    draw.text((415 * scale, 535 * scale), str(rev_count), fill=c_white, font=get_font(28 * scale, bold=True))
+    draw.text((415 * scale, 568 * scale), "Critic Reviews", fill=c_muted, font=get_font(14 * scale))
 
-    # --------------------------------------------------------
-    # Save
-    # --------------------------------------------------------
-
-    image.save(
-        output_path,
-        "PNG",
-        optimize=True
-    )
+    # 超采样下采样为目标尺寸（获得极其柔和无锯齿的边缘效果）
+    final_card = canvas.resize((CARD_WIDTH, CARD_HEIGHT), Image.Resampling.LANCZOS)
+    final_card.convert("RGB").save(output_path, "PNG", optimize=True)
 
 
 # ============================================================
 # Discord upload
 # ============================================================
 
-def send_discord(
-    game,
-    top_reviews,
-    old_score=None
-):
+def send_discord(game, top_reviews, old_score=None):
+    output_path = Path("opencritic_card.png")
+    create_card(game, top_reviews, output_path, old_score)
 
-    output_path = Path(
-        "opencritic_card.png"
-    )
-
-    create_card(
-        game,
-        top_reviews,
-        output_path,
-        old_score
-    )
-
-    opencritic_url = (
-        get_opencritic_url(
-            game
-        )
-    )
-
-    name = game.get(
-        "name",
-        "Unknown Game"
-    )
+    opencritic_url = get_opencritic_url(game)
+    name = game.get("name", "Unknown Game")
 
     payload = {
         "username": "OpenCritic",
@@ -1681,508 +611,165 @@ def send_discord(
             {
                 "title": name,
                 "url": opencritic_url,
+                "color": 0xFF5722,
                 "image": {
-                    "url":
-                        "attachment://"
-                        "opencritic_card.png"
+                    "url": "attachment://opencritic_card.png"
                 }
             }
         ]
     }
 
-    print(
-        f"OpenCritic URL: "
-        f"{opencritic_url}"
-    )
+    print(f"OpenCritic URL: {opencritic_url}")
 
-    with open(
-        output_path,
-        "rb"
-    ) as image_file:
-
+    with open(output_path, "rb") as image_file:
         response = requests.post(
             DISCORD_WEBHOOK,
-            data={
-                "payload_json":
-                    json.dumps(
-                        payload,
-                        ensure_ascii=False
-                    )
-            },
-            files={
-                "file":
-                    (
-                        "opencritic_card.png",
-                        image_file,
-                        "image/png"
-                    )
-            },
+            data={"payload_json": json.dumps(payload, ensure_ascii=False)},
+            files={"file": ("opencritic_card.png", image_file, "image/png")},
             timeout=60
         )
 
     if response.status_code >= 400:
-
-        print(
-            "ERROR sending Discord message:"
-        )
-
-        print(
-            response.text
-        )
-
+        print("ERROR sending Discord message:")
+        print(response.text)
         response.raise_for_status()
 
-    print(
-        "Discord notification sent."
-    )
+    print("Discord notification sent.")
 
-def format_number(value):
-    """
-    Format a number without unnecessary trailing zeros.
 
-    Examples:
-        10.0  -> "10"
-        4.0   -> "4"
-        4.5   -> "4.5"
-        83.0  -> "83"
-    """
-
-    try:
-        value = float(value)
-
-        if value.is_integer():
-            return str(int(value))
-
-        return f"{value:.2f}".rstrip("0").rstrip(".")
-
-    except (TypeError, ValueError):
-        return str(value)
-        
 # ============================================================
 # Main
 # ============================================================
 
 def main():
-
     if not API_KEY:
-
-        print(
-            "ERROR: OPENCRITIC_API_KEY "
-            "is missing."
-        )
-
+        print("ERROR: OPENCRITIC_API_KEY is missing.")
         sys.exit(1)
 
     if not DISCORD_WEBHOOK:
-
-        print(
-            "ERROR: DISCORD_WEBHOOK "
-            "is missing."
-        )
-
+        print("ERROR: DISCORD_WEBHOOK is missing.")
         sys.exit(1)
 
     state = load_state()
+    initialized = state["initialized"]
+    games_state = state["games"]
 
-    initialized = state[
-        "initialized"
-    ]
-
-    games_state = state[
-        "games"
-    ]
-
-    print(
-        "=================================================="
-    )
-
-    print(
-        "OpenCritic Score Monitor"
-    )
-
-    print(
-        "=================================================="
-    )
-
-    print(
-        f"Initialized: {initialized}"
-    )
+    print("==================================================")
+    print("OpenCritic Score Monitor")
+    print("==================================================")
+    print(f"Initialized: {initialized}")
 
     candidates = get_candidate_games()
-
     state_changed = False
 
     for summary in candidates:
-
-        game_id = summary.get(
-            "id"
-        )
-
+        game_id = summary.get("id")
         if game_id is None:
             continue
+        game_id = str(game_id)
 
-        game_id = str(
-            game_id
-        )
+        print("\n------------------------------------------")
+        print(f"Game ID: {game_id}")
+        print(f"Name: {summary.get('name', 'Unknown')}")
 
-        print(
-            "\n------------------------------------------"
-        )
-
-        print(
-            f"Game ID: {game_id}"
-        )
-
-        print(
-            f"Name: "
-            f"{summary.get('name', 'Unknown')}"
-        )
-
-        if not is_in_monitor_window(
-            summary
-        ):
-
-            print(
-                "Outside monitoring window."
-            )
-
+        if not is_in_monitor_window(summary):
+            print("Outside monitoring window.")
             continue
 
         try:
-
-            time.sleep(
-                REQUEST_DELAY
-            )
-
-            game = get_game(
-                game_id
-            )
-
+            time.sleep(REQUEST_DELAY)
+            game = get_game(game_id)
         except Exception as e:
-
-            print(
-                f"ERROR getting game "
-                f"{game_id}: {e}"
-            )
-
+            print(f"ERROR getting game {game_id}: {e}")
             continue
 
-        name = game.get(
-            "name",
-            summary.get(
-                "name",
-                "Unknown Game"
-            )
-        )
+        name = game.get("name", summary.get("name", "Unknown Game"))
+        raw_score = game.get("topCriticScore")
+        score = normalize_score(raw_score)
 
-        raw_score = game.get(
-            "topCriticScore"
-        )
+        print(f"Full game: {name}")
+        print(f"Normalized Score: {score}")
 
-        score = normalize_score(
-            raw_score
-        )
-
-        print(
-            f"Full game: {name}"
-        )
-
-        print(
-            f"Raw Score: {raw_score}"
-        )
-
-        print(
-            f"Normalized Score: {score}"
-        )
-
-        # ----------------------------------------------------
-        # No score
-        # ----------------------------------------------------
-
+        # 未出分
         if score is None:
-
-            print(
-                "No score yet."
-            )
-
+            print("No score yet.")
             if game_id not in games_state:
-
-                games_state[
-                    game_id
-                ] = {
+                games_state[game_id] = {
                     "name": name,
                     "score": None,
                     "last_notified_at": None
                 }
-
                 state_changed = True
-
             continue
 
-        # ----------------------------------------------------
-        # First run
-        # ----------------------------------------------------
-
+        # 首次运行基准初始化
         if not initialized:
-
-            print(
-                "FIRST RUN:"
-            )
-
-            print(
-                "Saving current integer "
-                "score as baseline."
-            )
-
-            print(
-                "No Discord notification."
-            )
-
-            games_state[
-                game_id
-            ] = {
+            print("FIRST RUN: Saving baseline.")
+            games_state[game_id] = {
                 "name": name,
                 "score": score,
                 "last_notified_at": None
             }
-
             state_changed = True
-
             continue
 
-        # ----------------------------------------------------
-        # Existing game
-        # ----------------------------------------------------
+        previous = games_state.get(game_id)
 
-        previous = games_state.get(
-            game_id
-        )
-
-        # ----------------------------------------------------
-        # New game
-        # ----------------------------------------------------
-
+        # 新收录出分游戏
         if previous is None:
-
-            print(
-                "NEW GAME + SCORE."
-            )
-
-            print(
-                "Getting critic reviews..."
-            )
-
-            reviews = get_reviews(
-                game_id
-            )
-
-            top_reviews = get_top_reviews(
-                reviews
-            )
-
-            print(
-                f"Selected "
-                f"{len(top_reviews)} "
-                f"critic outlets."
-            )
-
-            send_discord(
-                game,
-                top_reviews
-            )
-
-            games_state[
-                game_id
-            ] = {
+            print("NEW GAME + SCORE.")
+            reviews = get_reviews(game_id)
+            top_reviews = get_top_reviews(reviews)
+            send_discord(game, top_reviews)
+            games_state[game_id] = {
                 "name": name,
                 "score": score,
-                "last_notified_at":
-                    datetime.now(
-                        timezone.utc
-                    ).isoformat()
+                "last_notified_at": datetime.now(timezone.utc).isoformat()
             }
-
             state_changed = True
-
             continue
 
-        # ----------------------------------------------------
-        # Normalize previous score
-        # ----------------------------------------------------
+        old_score = normalize_score(previous.get("score"))
 
-        old_score = normalize_score(
-            previous.get(
-                "score"
-            )
-        )
-
-        if previous.get(
-            "score"
-        ) != old_score:
-
-            previous[
-                "score"
-            ] = old_score
-
-            state_changed = True
-
-        # ----------------------------------------------------
-        # Score unlocked
-        # ----------------------------------------------------
-
+        # 解禁首次开分
         if old_score is None:
-
-            print(
-                f"SCORE UNLOCKED: "
-                f"None -> {score}"
-            )
-
-            print(
-                "Getting critic reviews..."
-            )
-
-            reviews = get_reviews(
-                game_id
-            )
-
-            top_reviews = get_top_reviews(
-                reviews
-            )
-
-            send_discord(
-                game,
-                top_reviews
-            )
-
-            previous[
-                "name"
-            ] = name
-
-            previous[
-                "score"
-            ] = score
-
-            previous[
-                "last_notified_at"
-            ] = datetime.now(
-                timezone.utc
-            ).isoformat()
-
+            print(f"SCORE UNLOCKED: None -> {score}")
+            reviews = get_reviews(game_id)
+            top_reviews = get_top_reviews(reviews)
+            send_discord(game, top_reviews)
+            previous["name"] = name
+            previous["score"] = score
+            previous["last_notified_at"] = datetime.now(timezone.utc).isoformat()
             state_changed = True
-
             continue
 
-        # ----------------------------------------------------
-        # No change
-        # ----------------------------------------------------
-
+        # 分数无变动
         if old_score == score:
-
-            print(
-                f"Score unchanged: "
-                f"{old_score}"
-            )
-
+            print(f"Score unchanged: {old_score}")
             continue
 
-        # ----------------------------------------------------
-        # Score changed
-        # ----------------------------------------------------
-
-        print(
-            f"SCORE CHANGED: "
-            f"{old_score} -> {score}"
-        )
-
-        print(
-            "Getting critic reviews..."
-        )
-
-        reviews = get_reviews(
-            game_id
-        )
-
-        top_reviews = get_top_reviews(
-            reviews
-        )
-
-        send_discord(
-            game,
-            top_reviews,
-            old_score=old_score
-        )
-
-        previous[
-            "name"
-        ] = name
-
-        previous[
-            "score"
-        ] = score
-
-        previous[
-            "last_notified_at"
-        ] = datetime.now(
-            timezone.utc
-        ).isoformat()
-
+        # 分数发生变化
+        print(f"SCORE CHANGED: {old_score} -> {score}")
+        reviews = get_reviews(game_id)
+        top_reviews = get_top_reviews(reviews)
+        send_discord(game, top_reviews, old_score=old_score)
+        previous["name"] = name
+        previous["score"] = score
+        previous["last_notified_at"] = datetime.now(timezone.utc).isoformat()
         state_changed = True
-
-    # --------------------------------------------------------
-    # Finish first run
-    # --------------------------------------------------------
 
     if not initialized:
-
-        state[
-            "initialized"
-        ] = True
-
+        state["initialized"] = True
         state_changed = True
-
-        print(
-            "\n=================================================="
-        )
-
-        print(
-            "FIRST RUN COMPLETE"
-        )
-
-        print(
-            "Baseline created."
-        )
-
-        print(
-            "No Discord notifications were sent."
-        )
-
-        print(
-            "=================================================="
-        )
-
-    # --------------------------------------------------------
-    # Save
-    # --------------------------------------------------------
+        print("\nFIRST RUN COMPLETE: Baseline created.")
 
     if state_changed:
-
-        save_state(
-            state
-        )
-
-        print(
-            "\nState saved."
-        )
-
+        save_state(state)
+        print("\nState saved.")
     else:
+        print("\nNo state changes.")
 
-        print(
-            "\nNo state changes."
-        )
-
-    print(
-        "\nDone."
-    )
+    print("\nDone.")
 
 
 if __name__ == "__main__":
