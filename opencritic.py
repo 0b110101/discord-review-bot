@@ -111,7 +111,11 @@ def normalize_score(score):
     if score is None:
         return None
     try:
-        return int(round(float(score)))
+        val = int(round(float(score)))
+        # OpenCritic API 使用 -1 表示尚未出分 (Unrated)
+        if val < 0:
+            return None
+        return val
     except (TypeError, ValueError):
         return None
 
@@ -690,9 +694,15 @@ def main():
         print(f"Full game: {name}")
         print(f"Normalized Score: {score}")
 
-        # 未出分
-        if score is None:
-            print("No score yet.")
+        # 获取评论数双重核验
+        rev_count = game.get("numReviews") or game.get("numTopCriticReviews") or 0
+
+        # ----------------------------------------------------
+        # No score (未出分、负数占位符或评测数为 0)
+        # ----------------------------------------------------
+        if score is None or rev_count <= 0:
+            print(f"No valid score yet (Score: {raw_score}, Reviews: {rev_count}).")
+
             if game_id not in games_state:
                 games_state[game_id] = {
                     "name": name,
@@ -700,6 +710,11 @@ def main():
                     "last_notified_at": None
                 }
                 state_changed = True
+            # 若历史状态中被误写入了 -1，自动清洗为 None
+            elif games_state[game_id].get("score") is not None and games_state[game_id]["score"] < 0:
+                games_state[game_id]["score"] = None
+                state_changed = True
+
             continue
 
         # 首次运行基准初始化
