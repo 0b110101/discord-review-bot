@@ -112,7 +112,7 @@ def normalize_score(score):
         return None
     try:
         val = int(round(float(score)))
-        # OpenCritic API 使用 -1 表示尚未出分 (Unrated)
+        # OpenCritic API 使用 -1 表示尚未出分 (Unrated)，必须视为 None
         if val < 0:
             return None
         return val
@@ -336,10 +336,7 @@ def get_outlet_rank(outlet_name):
 
 
 def get_top_reviews(reviews):
-    """
-    按媒体影响力权重筛选出前 5 家媒体评分
-    优先展现 IGN, GameSpot, PC Gamer, Eurogamer 等一线媒体
-    """
+    """按媒体影响力权重筛选出前 5 家主流媒体评分"""
     seen = set()
     candidates = []
 
@@ -369,7 +366,6 @@ def get_top_reviews(reviews):
             "is_top": 1 if is_top else 0
         })
 
-    # 优先排序：白名单权重 -> 是否为 Top Critic
     candidates.sort(key=lambda x: (x["rank"], -x["is_top"]))
 
     usable = []
@@ -383,7 +379,7 @@ def get_top_reviews(reviews):
 
 
 # ============================================================
-# Image helpers
+# Image helpers & Steam Fallback
 # ============================================================
 
 def get_image_url(game):
@@ -415,7 +411,7 @@ def download_image(url):
     if not url:
         return None
     try:
-        response = requests.get(url, timeout=30)
+        response = requests.get(url, timeout=15)
         response.raise_for_status()
         return Image.open(BytesIO(response.content)).convert("RGB")
     except Exception as e:
@@ -423,11 +419,64 @@ def download_image(url):
         return None
 
 
-def crop_and_round_cover(image, target_size, radius):
-    """等比居中裁切并添加圆角蒙版，防止直角穿透"""
+def get_steam_fallback_image(game_name: str):
+    """当 OpenCritic 缺失封面图时，免 Key 从 Steam 抓取同名游戏横幅"""
+    if not game_name:
+        return None
+    try:
+        search_url = "https://store.steampowered.com/api/storesearch/"
+        params = {"term": game_name, "l": "english", "cc": "US"}
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(search_url, params=params, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            items = resp.json().get("items", [])
+            if items:
+                app_id = items[0].get("id")
+                steam_img_url = f"https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/{app_id}/header.jpg"
+                img = download_image(steam_img_url)
+                if img:
+                    print(f"  Successfully fetched Steam banner for: {game_name}")
+                    return img
+    except Exception as e:
+        print(f"Steam fallback failed for {game_name}: {e}")
+    return None
+
+
+def crop_and_round_cover(image, target_size, radius, scale=1):
+    """等比居中裁切并添加圆角蒙版；若彻底无图，则绘制具有设计感的默认占位图"""
     tw, th = target_size
     if image is None:
-        base = Image.new("RGBA", (tw, th), (30, 36, 48, 255))
+        base = Image.new("RGBA", (tw, th), (27, 33, 46, 255))
+        draw = ImageDraw.Draw(base)
+
+        # 内部微光内框
+        border_m = 15 * scale
+        draw.rounded_rectangle(
+            [(border_m, border_m), (tw - border_m, th - border_m)],
+            radius=max(4, radius - 4 * scale),
+            outline=(42, 52, 71),
+            width=2 * scale
+        )
+
+        # 居中手柄图标简图
+        cx, cy = tw // 2, th // 2 - int(20 * scale)
+        # 手柄外框
+        draw.rounded_rectangle(
+            [(cx - int(50 * scale), cy - int(30 * scale)), (cx + int(50 * scale), cy + int(30 * scale))],
+            radius=int(16 * scale),
+            outline=(65, 78, 102),
+            width=int(4 * scale)
+        )
+        # 十字键
+        draw.line([(cx - int(30 * scale), cy), (cx - int(15 * scale), cy)], fill=(65, 78, 102), width=int(4 * scale))
+        draw.line([(cx - int(22.5 * scale), cy - int(7.5 * scale)), (cx - int(22.5 * scale), cy + int(7.5 * scale))], fill=(65, 78, 102), width=int(4 * scale))
+        # AB 键
+        draw.ellipse([(cx + int(20 * scale), cy - int(6 * scale)), (cx + int(28 * scale), cy + int(2 * scale))], fill=(65, 78, 102))
+        draw.ellipse([(cx + int(10 * scale), cy + int(4 * scale)), (cx + int(18 * scale), cy + int(12 * scale))], fill=(65, 78, 102))
+
+        # 提示文字
+        font_hint = get_font(int(18 * scale), bold=True)
+        draw.text((tw // 2, cy + int(55 * scale)), "NO IMAGE AVAILABLE", fill=(85, 100, 128), font=font_hint, anchor="mm")
     else:
         target_ratio = tw / th
         width, height = image.size
@@ -444,7 +493,7 @@ def crop_and_round_cover(image, target_size, radius):
 
         base = image.resize((tw, th), Image.Resampling.LANCZOS).convert("RGBA")
 
-    # 创建圆角遮罩
+    # 圆角遮罩裁剪
     mask = Image.new("L", (tw, th), 0)
     ImageDraw.Draw(mask).rounded_rectangle([(0, 0), (tw, th)], radius=radius, fill=255)
     base.putalpha(mask)
@@ -468,9 +517,7 @@ def draw_ring(draw, center, radius, width, percent, ring_bg, ring_fill):
 def draw_speech_bubble(draw, x, y, width, height, color, line_w=2):
     """绘制左下角评论气泡图标"""
     r = int(height * 0.2)
-    # 主体圆角矩形
     draw.rounded_rectangle([x, y, x + width, y + height], radius=r, outline=color, width=line_w)
-    # 小尾巴
     tail_top = y + height - line_w
     tail_pts = [
         (x + int(width * 0.25), tail_top),
@@ -481,9 +528,8 @@ def draw_speech_bubble(draw, x, y, width, height, color, line_w=2):
 
 
 def draw_opencritic_logo(draw, x, y, radius, color):
-    """矢量绘制 OpenCritic 经典标志"""
+    """绘制 OpenCritic 标志"""
     draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=color)
-    # 内部镂空圆点与切槽
     inner_r = radius * 0.32
     draw.ellipse([x - inner_r, y - inner_r, x + inner_r, y + inner_r], fill=(19, 24, 34))
     line_w = max(2, int(radius * 0.18))
@@ -500,7 +546,6 @@ def create_card(game, top_reviews, output_path, old_score=None):
     w = CARD_WIDTH * scale
     h = CARD_HEIGHT * scale
 
-    # 色彩方案（高保真还原）
     c_bg = (19, 24, 34)
     c_border = (38, 46, 62)
     c_white = (255, 255, 255)
@@ -530,17 +575,21 @@ def create_card(game, top_reviews, output_path, old_score=None):
     font_brand = get_font(22 * scale, bold=True)
     draw.text((w - 152 * scale, 55 * scale), "OpenCritic", fill=c_white, font=font_brand)
 
-    # 3. 左侧游戏海报（标准 16:9 裁剪，带圆角，杜绝直角穿模）
+    # 3. 左侧游戏海报（优先 OpenCritic，缺失则走 Steam 搜索补全）
     cover_w = 640 * scale
     cover_h = 360 * scale
     cover_x = 55 * scale
     cover_y = 120 * scale
 
     cover_raw = download_image(get_image_url(game))
-    cover_rounded = crop_and_round_cover(cover_raw, (cover_w, cover_h), radius=16 * scale)
+    if cover_raw is None:
+        print(f"  OpenCritic lacks banner for '{name}', attempting Steam search fallback...")
+        cover_raw = get_steam_fallback_image(name)
+
+    cover_rounded = crop_and_round_cover(cover_raw, (cover_w, cover_h), radius=16 * scale, scale=scale)
     canvas.paste(cover_rounded, (cover_x, cover_y), cover_rounded)
 
-    # 4. 右上 Top Critic Average（并排圆环）
+    # 4. 右上 Top Critic Average
     score = normalize_score(game.get("topCriticScore")) or 0
     ring_score_center = (800 * scale, 180 * scale)
     draw_ring(draw, ring_score_center, radius=48 * scale, width=9 * scale, percent=score, ring_bg=c_ring_bg, ring_fill=c_orange)
@@ -557,7 +606,7 @@ def create_card(game, top_reviews, output_path, old_score=None):
         sign = f"+{diff}" if diff > 0 else str(diff)
         draw.text((865 * scale, 215 * scale), f"{old_score} → {score} ({sign})", fill=c_orange, font=get_font(15 * scale, bold=True))
 
-    # 5. 右侧权威媒体评分列表（严格右对齐）
+    # 5. 右侧权威媒体评分列表
     media_start_y = 295 * scale
     media_row_gap = 52 * scale
     right_align_x = w - 60 * scale
@@ -567,12 +616,10 @@ def create_card(game, top_reviews, output_path, old_score=None):
 
     for i, item in enumerate(top_reviews):
         cur_y = media_start_y + i * media_row_gap
-        # 媒体名（左对齐）
         pub_name = item["publication"]
         if len(pub_name) > 22:
             pub_name = pub_name[:20] + "..."
         draw.text((750 * scale, cur_y), pub_name, fill=c_white, font=font_media)
-        # 分数（右对齐）
         draw.text((right_align_x, cur_y), item["score"], fill=c_white, font=font_media_score, anchor="ra")
 
     # 6. 左下方指标：Critics Recommend & Critic Reviews
@@ -584,16 +631,16 @@ def create_card(game, top_reviews, output_path, old_score=None):
 
     draw.text((170 * scale, 542 * scale), "Critics\nRecommend", fill=c_white, font=get_font(18 * scale), spacing=4 * scale)
 
-    # 6.2 细竖线分割
+    # 6.2 竖线分割
     draw.line([(340 * scale, 535 * scale), (340 * scale, 585 * scale)], fill=c_ring_bg, width=2 * scale)
 
-    # 6.3 Critic Reviews（气泡图标 + 评论数量）
+    # 6.3 Critic Reviews
     draw_speech_bubble(draw, x=375 * scale, y=547 * scale, width=24 * scale, height=18 * scale, color=c_muted, line_w=2 * scale)
     rev_count = game.get("numReviews") or game.get("numTopCriticReviews") or 0
     draw.text((415 * scale, 535 * scale), str(rev_count), fill=c_white, font=get_font(28 * scale, bold=True))
     draw.text((415 * scale, 568 * scale), "Critic Reviews", fill=c_muted, font=get_font(14 * scale))
 
-    # 超采样下采样为目标尺寸（获得极其柔和无锯齿的边缘效果）
+    # 下采样输出无锯齿高保真图
     final_card = canvas.resize((CARD_WIDTH, CARD_HEIGHT), Image.Resampling.LANCZOS)
     final_card.convert("RGB").save(output_path, "PNG", optimize=True)
 
@@ -694,7 +741,7 @@ def main():
         print(f"Full game: {name}")
         print(f"Normalized Score: {score}")
 
-        # 获取评论数双重核验
+        # 获取评测数量做双重过滤
         rev_count = game.get("numReviews") or game.get("numTopCriticReviews") or 0
 
         # ----------------------------------------------------
@@ -710,7 +757,7 @@ def main():
                     "last_notified_at": None
                 }
                 state_changed = True
-            # 若历史状态中被误写入了 -1，自动清洗为 None
+            # 清理此前误录入的负数垃圾数据
             elif games_state[game_id].get("score") is not None and games_state[game_id]["score"] < 0:
                 games_state[game_id]["score"] = None
                 state_changed = True
