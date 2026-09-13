@@ -37,7 +37,7 @@ REQUEST_DELAY = 0.3
 CARD_WIDTH = 1200
 CARD_HEIGHT = 675
 
-# 权威媒体优先级列表（按业内公认影响力及官方主页常驻媒体排序）
+# 权威媒体优先级列表
 POPULAR_OUTLETS = [
     "IGN",
     "GameSpot",
@@ -112,7 +112,6 @@ def normalize_score(score):
         return None
     try:
         val = int(round(float(score)))
-        # OpenCritic API 使用 -1 表示尚未出分 (Unrated)，必须视为 None
         if val < 0:
             return None
         return val
@@ -152,21 +151,34 @@ def get_opencritic_url(game):
 
 
 # ============================================================
-# API
+# API (带重试机制与长超时防护)
 # ============================================================
 
-def api_get(path):
+def api_get(path, max_retries=3, timeout=(10, 45)):
+    """
+    带超时重试机制的 API 请求封装
+    - 连接超时: 10 秒
+    - 读取超时: 45 秒
+    - 遇到网络波动自动退避重试
+    """
     url = API_BASE + path
-    print(f"GET {url}")
-    response = requests.get(url, headers=HEADERS, timeout=30)
-    print(f"HTTP {response.status_code}")
-    response.raise_for_status()
-    try:
-        return response.json()
-    except ValueError:
-        print("ERROR: API did not return JSON.")
-        print(response.text[:1000])
-        sys.exit(1)
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"GET {url} (Attempt {attempt}/{max_retries})")
+            response = requests.get(url, headers=HEADERS, timeout=timeout)
+            print(f"HTTP {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+        except (requests.exceptions.RequestException, ValueError) as e:
+            print(f"WARNING: API request error on attempt {attempt}: {e}")
+            if attempt < max_retries:
+                wait_sec = attempt * 3
+                print(f"Retrying in {wait_sec}s...")
+                time.sleep(wait_sec)
+            else:
+                print(f"ERROR: Failed to fetch {url} after {max_retries} attempts.")
+                raise
 
 
 def normalize_games(data):
@@ -177,8 +189,8 @@ def normalize_games(data):
             value = data.get(key)
             if isinstance(value, list):
                 return value
-    print("ERROR: Could not find game list in API response.")
-    sys.exit(1)
+    print("WARNING: Could not find game list in API response.")
+    return []
 
 
 # ============================================================
@@ -249,15 +261,19 @@ def get_candidate_games():
     candidates = {}
     endpoints = ["/game/upcoming", "/game/recently-released"]
     for endpoint in endpoints:
-        print(f"Discovering games: {endpoint}")
-        data = api_get(endpoint)
-        games = normalize_games(data)
-        for game in games:
-            game_id = game.get("id")
-            if game_id is not None:
-                candidates[str(game_id)] = game
+        print(f"\nDiscovering games: {endpoint}")
+        try:
+            data = api_get(endpoint)
+            games = normalize_games(data)
+            for game in games:
+                game_id = game.get("id")
+                if game_id is not None:
+                    candidates[str(game_id)] = game
+        except Exception as e:
+            print(f"WARNING: Failed to fetch endpoint {endpoint}, skipping: {e}")
         time.sleep(REQUEST_DELAY)
-    print(f"Unique candidate games: {len(candidates)}")
+
+    print(f"\nUnique candidate games fetched: {len(candidates)}")
     return list(candidates.values())
 
 
@@ -322,7 +338,6 @@ def get_review_score_display(review):
 
 
 def get_outlet_rank(outlet_name):
-    """计算媒体知名度优先级，越小优先级越高"""
     if not outlet_name:
         return 999
     name_clean = outlet_name.strip().lower()
@@ -336,7 +351,6 @@ def get_outlet_rank(outlet_name):
 
 
 def get_top_reviews(reviews):
-    """按媒体影响力权重筛选出前 5 家主流媒体评分"""
     seen = set()
     candidates = []
 
@@ -420,7 +434,6 @@ def download_image(url):
 
 
 def get_steam_fallback_image(game_name: str):
-    """当 OpenCritic 缺失封面图时，免 Key 从 Steam 抓取同名游戏横幅"""
     if not game_name:
         return None
     try:
@@ -443,13 +456,11 @@ def get_steam_fallback_image(game_name: str):
 
 
 def crop_and_round_cover(image, target_size, radius, scale=1):
-    """等比居中裁切并添加圆角蒙版；若彻底无图，则绘制具有设计感的默认占位图"""
     tw, th = target_size
     if image is None:
         base = Image.new("RGBA", (tw, th), (27, 33, 46, 255))
         draw = ImageDraw.Draw(base)
 
-        # 内部微光内框
         border_m = 15 * scale
         draw.rounded_rectangle(
             [(border_m, border_m), (tw - border_m, th - border_m)],
@@ -458,23 +469,18 @@ def crop_and_round_cover(image, target_size, radius, scale=1):
             width=2 * scale
         )
 
-        # 居中手柄图标简图
         cx, cy = tw // 2, th // 2 - int(20 * scale)
-        # 手柄外框
         draw.rounded_rectangle(
             [(cx - int(50 * scale), cy - int(30 * scale)), (cx + int(50 * scale), cy + int(30 * scale))],
             radius=int(16 * scale),
             outline=(65, 78, 102),
             width=int(4 * scale)
         )
-        # 十字键
         draw.line([(cx - int(30 * scale), cy), (cx - int(15 * scale), cy)], fill=(65, 78, 102), width=int(4 * scale))
         draw.line([(cx - int(22.5 * scale), cy - int(7.5 * scale)), (cx - int(22.5 * scale), cy + int(7.5 * scale))], fill=(65, 78, 102), width=int(4 * scale))
-        # AB 键
         draw.ellipse([(cx + int(20 * scale), cy - int(6 * scale)), (cx + int(28 * scale), cy + int(2 * scale))], fill=(65, 78, 102))
         draw.ellipse([(cx + int(10 * scale), cy + int(4 * scale)), (cx + int(18 * scale), cy + int(12 * scale))], fill=(65, 78, 102))
 
-        # 提示文字
         font_hint = get_font(int(18 * scale), bold=True)
         draw.text((tw // 2, cy + int(55 * scale)), "NO IMAGE AVAILABLE", fill=(85, 100, 128), font=font_hint, anchor="mm")
     else:
@@ -493,7 +499,6 @@ def crop_and_round_cover(image, target_size, radius, scale=1):
 
         base = image.resize((tw, th), Image.Resampling.LANCZOS).convert("RGBA")
 
-    # 圆角遮罩裁剪
     mask = Image.new("L", (tw, th), 0)
     ImageDraw.Draw(mask).rounded_rectangle([(0, 0), (tw, th)], radius=radius, fill=255)
     base.putalpha(mask)
@@ -505,7 +510,6 @@ def crop_and_round_cover(image, target_size, radius, scale=1):
 # ============================================================
 
 def draw_ring(draw, center, radius, width, percent, ring_bg, ring_fill):
-    """绘制平滑圆环进度条"""
     x, y = center
     box = [x - radius, y - radius, x + radius, y + radius]
     draw.arc(box, start=0, end=360, fill=ring_bg, width=width)
@@ -515,7 +519,6 @@ def draw_ring(draw, center, radius, width, percent, ring_bg, ring_fill):
 
 
 def draw_speech_bubble(draw, x, y, width, height, color, line_w=2):
-    """绘制左下角评论气泡图标"""
     r = int(height * 0.2)
     draw.rounded_rectangle([x, y, x + width, y + height], radius=r, outline=color, width=line_w)
     tail_top = y + height - line_w
@@ -528,7 +531,6 @@ def draw_speech_bubble(draw, x, y, width, height, color, line_w=2):
 
 
 def draw_opencritic_logo(draw, x, y, radius, color):
-    """绘制 OpenCritic 标志"""
     draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=color)
     inner_r = radius * 0.32
     draw.ellipse([x - inner_r, y - inner_r, x + inner_r, y + inner_r], fill=(19, 24, 34))
@@ -575,7 +577,7 @@ def create_card(game, top_reviews, output_path, old_score=None):
     font_brand = get_font(22 * scale, bold=True)
     draw.text((w - 152 * scale, 55 * scale), "OpenCritic", fill=c_white, font=font_brand)
 
-    # 3. 左侧游戏海报（优先 OpenCritic，缺失则走 Steam 搜索补全）
+    # 3. 左侧游戏海报
     cover_w = 640 * scale
     cover_h = 360 * scale
     cover_x = 55 * scale
@@ -600,7 +602,6 @@ def create_card(game, top_reviews, output_path, old_score=None):
     font_avg_label = get_font(20 * scale, bold=False)
     draw.text((865 * scale, 160 * scale), "Top Critic\nAverage", fill=c_white, font=font_avg_label, spacing=4 * scale)
 
-    # 分数变动提示
     if old_score is not None:
         diff = score - old_score
         sign = f"+{diff}" if diff > 0 else str(diff)
@@ -623,7 +624,6 @@ def create_card(game, top_reviews, output_path, old_score=None):
         draw.text((right_align_x, cur_y), item["score"], fill=c_white, font=font_media_score, anchor="ra")
 
     # 6. 左下方指标：Critics Recommend & Critic Reviews
-    # 6.1 Critics Recommend
     recommended = normalize_score(game.get("percentRecommended")) or 0
     rec_center = (115 * scale, 560 * scale)
     draw_ring(draw, rec_center, radius=38 * scale, width=7 * scale, percent=recommended, ring_bg=c_ring_bg, ring_fill=c_orange)
@@ -631,16 +631,13 @@ def create_card(game, top_reviews, output_path, old_score=None):
 
     draw.text((170 * scale, 542 * scale), "Critics\nRecommend", fill=c_white, font=get_font(18 * scale), spacing=4 * scale)
 
-    # 6.2 竖线分割
     draw.line([(340 * scale, 535 * scale), (340 * scale, 585 * scale)], fill=c_ring_bg, width=2 * scale)
 
-    # 6.3 Critic Reviews
     draw_speech_bubble(draw, x=375 * scale, y=547 * scale, width=24 * scale, height=18 * scale, color=c_muted, line_w=2 * scale)
     rev_count = game.get("numReviews") or game.get("numTopCriticReviews") or 0
     draw.text((415 * scale, 535 * scale), str(rev_count), fill=c_white, font=get_font(28 * scale, bold=True))
     draw.text((415 * scale, 568 * scale), "Critic Reviews", fill=c_muted, font=get_font(14 * scale))
 
-    # 下采样输出无锯齿高保真图
     final_card = canvas.resize((CARD_WIDTH, CARD_HEIGHT), Image.Resampling.LANCZOS)
     final_card.convert("RGB").save(output_path, "PNG", optimize=True)
 
@@ -741,12 +738,9 @@ def main():
         print(f"Full game: {name}")
         print(f"Normalized Score: {score}")
 
-        # 获取评测数量做双重过滤
         rev_count = game.get("numReviews") or game.get("numTopCriticReviews") or 0
 
-        # ----------------------------------------------------
-        # No score (未出分、负数占位符或评测数为 0)
-        # ----------------------------------------------------
+        # 未出分或负数占位符过滤
         if score is None or rev_count <= 0:
             print(f"No valid score yet (Score: {raw_score}, Reviews: {rev_count}).")
 
@@ -757,7 +751,6 @@ def main():
                     "last_notified_at": None
                 }
                 state_changed = True
-            # 清理此前误录入的负数垃圾数据
             elif games_state[game_id].get("score") is not None and games_state[game_id]["score"] < 0:
                 games_state[game_id]["score"] = None
                 state_changed = True
