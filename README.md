@@ -1,2 +1,2 @@
 # discord-review-bot
-Webhook推送RSS源信息
+Webhook推送OC均分
