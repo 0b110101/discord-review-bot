@@ -98,8 +98,8 @@
     },
     "21490": {
       "name": "Kingdom Hearts Collection [I-III]",
-      "score": 85,
-      "last_notified_at": "2026-10-05T23:40:22.994143+00:00"
+      "score": 84,
+      "last_notified_at": "2026-10-07T22:37:09.152434+00:00"
     },
     "21402": {
       "name": "Silver Pines",
@@ -108,13 +108,23 @@
     },
     "21440": {
       "name": "Forever Ago",
-      "score": 73,
-      "last_notified_at": "2026-10-07T17:11:59.459993+00:00"
+      "score": 72,
+      "last_notified_at": "2026-10-07T22:37:05.997031+00:00"
     },
     "21501": {
       "name": "Order of the Sinking Star",
-      "score": 82,
-      "last_notified_at": "2026-10-07T17:12:02.860554+00:00"
+      "score": 83,
+      "last_notified_at": "2026-10-07T22:37:10.923302+00:00"
+    },
+    "21470": {
+      "name": "Dragon's Dogma 2: Dark Arisen",
+      "score": 88,
+      "last_notified_at": "2026-10-07T22:37:07.570250+00:00"
+    },
+    "21509": {
+      "name": "The Jackbox Party Pack 12",
+      "score": null,
+      "last_notified_at": null
     }
   }
 }
