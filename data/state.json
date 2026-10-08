@@ -103,13 +103,13 @@
     },
     "21402": {
       "name": "Silver Pines",
-      "score": 87,
-      "last_notified_at": "2026-10-06T17:51:06.723330+00:00"
+      "score": 88,
+      "last_notified_at": "2026-10-08T17:09:39.598834+00:00"
     },
     "21440": {
       "name": "Forever Ago",
-      "score": 72,
-      "last_notified_at": "2026-10-07T22:37:05.997031+00:00"
+      "score": 73,
+      "last_notified_at": "2026-10-08T17:09:37.565826+00:00"
     },
     "21501": {
       "name": "Order of the Sinking Star",
@@ -135,6 +135,11 @@
       "name": "Final Fantasy Resonance",
       "score": null,
       "last_notified_at": null
+    },
+    "21457": {
+      "name": "Clive Barker's Hellraiser: Revival",
+      "score": 76,
+      "last_notified_at": "2026-10-08T17:09:35.478920+00:00"
     }
   }
 }
