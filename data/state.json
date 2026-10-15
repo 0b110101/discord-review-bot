@@ -153,8 +153,8 @@
     },
     "21486": {
       "name": "Warhammer 40,000: Boltgun 2",
-      "score": 84,
-      "last_notified_at": "2026-10-14T20:24:57.396197+00:00"
+      "score": 85,
+      "last_notified_at": "2026-10-15T08:11:16.447850+00:00"
     },
     "20805": {
       "name": "Valor Mortis",
@@ -163,6 +163,11 @@
     },
     "19914": {
       "name": "Phantom Blade Zero",
+      "score": null,
+      "last_notified_at": null
+    },
+    "21535": {
+      "name": "Disney/Pixar Toy Story 3 Complete Edition",
       "score": null,
       "last_notified_at": null
     }
