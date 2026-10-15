@@ -153,8 +153,8 @@
     },
     "21486": {
       "name": "Warhammer 40,000: Boltgun 2",
-      "score": 85,
-      "last_notified_at": "2026-10-15T08:11:16.447850+00:00"
+      "score": 84,
+      "last_notified_at": "2026-10-15T13:53:53.826035+00:00"
     },
     "20805": {
       "name": "Valor Mortis",
@@ -170,6 +170,11 @@
       "name": "Disney/Pixar Toy Story 3 Complete Edition",
       "score": null,
       "last_notified_at": null
+    },
+    "21435": {
+      "name": "Tales of Eternia Remastered",
+      "score": 76,
+      "last_notified_at": "2026-10-15T13:53:51.728724+00:00"
     }
   }
 }
